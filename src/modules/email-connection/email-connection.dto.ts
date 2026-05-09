@@ -1,0 +1,31 @@
+import { z } from 'zod';
+
+export const GmailCallbackSchema = z.object({
+  code: z.string().min(1),
+  redirect_uri: z.string().url(),
+});
+export type GmailCallbackDTO = z.infer<typeof GmailCallbackSchema>;
+
+export const SetLabelSchema = z.object({
+  label_id: z.string().min(1),
+  label_name: z.string().min(1),
+});
+export type SetLabelDTO = z.infer<typeof SetLabelSchema>;
+
+export const EmailConnectionResponseSchema = z.object({
+  id: z.number(),
+  gmail_address: z.string(),
+  status: z.string(),
+  gmail_label_id: z.string().nullable(),
+  gmail_label_name: z.string().nullable(),
+  last_synced_at: z.date().nullable(),
+  created_at: z.date(),
+});
+export type EmailConnectionResponseDTO = z.infer<typeof EmailConnectionResponseSchema>;
+
+export const GmailLabelSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  messages_total: z.number().optional(),
+});
+export type GmailLabelDTO = z.infer<typeof GmailLabelSchema>;

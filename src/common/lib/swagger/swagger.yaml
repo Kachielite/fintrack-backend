@@ -1,0 +1,658 @@
+openapi: 3.0.0
+info:
+  title: FinTrack API
+  version: 1.0.0
+  description: FinTrack backend API
+
+servers:
+  - url: /api
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ── Error envelopes ──────────────────────────────────────────────────────
+    Unauthorized:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 401
+        error:
+          type: string
+          example: Unauthorized
+        message:
+          type: string
+          example: Invalid or expired token
+
+    NotFound:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 404
+        error:
+          type: string
+          example: Resource Not Found
+        message:
+          type: string
+          example: Resource not found
+
+    BadRequest:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 400
+        error:
+          type: string
+          example: Bad Request
+        message:
+          type: string
+          example: Validation failed
+
+    InternalServerError:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 500
+        error:
+          type: string
+          example: Internal Server Error
+        message:
+          type: string
+          example: An unexpected error occurred
+
+    # ── Generic success ───────────────────────────────────────────────────────
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Operation completed successfully
+        data:
+          nullable: true
+          example: null
+
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    AuthUser:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          example: jane@example.com
+        first_name:
+          type: string
+          example: Jane
+        onboarding_complete:
+          type: boolean
+          example: false
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MX0.abc123
+        refresh_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MX0.def456
+        user:
+          $ref: '#/components/schemas/AuthUser'
+
+    TokenRefreshResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MX0.newtoken123
+
+    # ── User ─────────────────────────────────────────────────────────────────
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          example: jane@example.com
+        first_name:
+          type: string
+          example: Jane
+        last_name:
+          type: string
+          nullable: true
+          example: Doe
+        ref_currency:
+          type: string
+          example: NGN
+        advisor_tone:
+          type: string
+          nullable: true
+          example: motivational
+        goal_type:
+          type: string
+          nullable: true
+          example: save_money
+        income_range:
+          type: string
+          nullable: true
+          example: 500k-1m
+        pay_frequency:
+          type: string
+          nullable: true
+          example: monthly
+        onboarding_complete:
+          type: boolean
+          example: true
+        plan_tier:
+          type: string
+          example: free
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:00:00.000Z'
+
+    # ── Bank ─────────────────────────────────────────────────────────────────
+    Bank:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Access Bank
+        shortCode:
+          type: string
+          example: ACCESS
+        country:
+          type: string
+          nullable: true
+          example: NG
+        logoUrl:
+          type: string
+          nullable: true
+          example: 'https://cdn.example.com/access.png'
+        isActive:
+          type: boolean
+          example: true
+
+    # ── Email Connection ──────────────────────────────────────────────────────
+    EmailConnection:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        gmail_address:
+          type: string
+          example: jane@gmail.com
+        status:
+          type: string
+          example: active
+        gmail_label_id:
+          type: string
+          nullable: true
+          example: Label_12345
+        gmail_label_name:
+          type: string
+          nullable: true
+          example: Bank Alerts
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-05-09T08:00:00.000Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-01-20T08:00:00.000Z'
+
+    GmailLabel:
+      type: object
+      properties:
+        id:
+          type: string
+          example: Label_12345
+        name:
+          type: string
+          example: Bank Alerts
+        messages_total:
+          type: integer
+          example: 48
+
+    GmailAuthUrl:
+      type: object
+      properties:
+        url:
+          type: string
+          example: 'https://accounts.google.com/o/oauth2/auth?client_id=...'
+
+    # ── Parser Rules ──────────────────────────────────────────────────────────
+    ParserRule:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 5
+        fieldName:
+          type: string
+          example: amount
+        regexPattern:
+          type: string
+          example: 'NGN([\d,]+\.\d{2})'
+        captureGroup:
+          type: integer
+          example: 1
+        transformType:
+          type: string
+          nullable: true
+          example: parse_amount
+
+    ParserTemplate:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        bankId:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Access Bank Debit Alert
+        status:
+          type: string
+          example: production
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParserRule'
+
+    AuditResult:
+      type: object
+      properties:
+        passed:
+          type: boolean
+          example: true
+        issues:
+          type: array
+          items:
+            type: string
+          example: []
+        suggestions:
+          type: array
+          items:
+            type: string
+          example:
+            - 'Consider adding a fallback pattern for amounts without decimal points'
+
+    # ── Transaction ───────────────────────────────────────────────────────────
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 42
+        merchant:
+          type: string
+          example: Shoprite
+        category:
+          type: string
+          example: groceries
+        transactionType:
+          type: string
+          example: debit
+        amount:
+          type: number
+          example: -5000
+        currency:
+          type: string
+          example: NGN
+        refAmount:
+          type: number
+          example: -5000
+        refCurrency:
+          type: string
+          example: NGN
+        transactionDate:
+          type: string
+          format: date-time
+          example: '2026-05-01T14:30:00.000Z'
+        status:
+          type: string
+          example: verified
+        bankId:
+          type: integer
+          nullable: true
+          example: 1
+
+    PaginatedTransactions:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total_items:
+          type: integer
+          example: 145
+        pages:
+          type: integer
+          example: 8
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+
+    CategorySpend:
+      type: object
+      properties:
+        category:
+          type: string
+          example: groceries
+        total:
+          type: number
+          example: 35000
+
+    CurrencyBreakdown:
+      type: object
+      properties:
+        currency:
+          type: string
+          example: USD
+        total:
+          type: number
+          example: 120.50
+
+    TransactionSummary:
+      type: object
+      properties:
+        period_start:
+          type: string
+          format: date-time
+          example: '2026-05-01T00:00:00.000Z'
+        period_end:
+          type: string
+          format: date-time
+          example: '2026-05-31T23:59:59.000Z'
+        total_spend:
+          type: number
+          example: 125000
+        total_income:
+          type: number
+          example: 350000
+        net:
+          type: number
+          example: 225000
+        ref_currency:
+          type: string
+          example: NGN
+        by_category:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategorySpend'
+        by_currency:
+          type: array
+          items:
+            $ref: '#/components/schemas/CurrencyBreakdown'
+        vs_last_period_pct:
+          type: number
+          nullable: true
+          example: 12.5
+
+    # ── Exchange Rate ─────────────────────────────────────────────────────────
+    ExchangeRate:
+      type: object
+      properties:
+        base_currency:
+          type: string
+          example: NGN
+        target_currency:
+          type: string
+          example: USD
+        rate:
+          type: number
+          example: 0.00063
+        fetched_at:
+          type: string
+          format: date-time
+          example: '2026-05-09T08:00:00.000Z'
+
+    # ── Budget ────────────────────────────────────────────────────────────────
+    BudgetWithProgress:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 3
+        category:
+          type: string
+          example: groceries
+        limit_amount:
+          type: number
+          example: 50000
+        currency:
+          type: string
+          example: NGN
+        period_type:
+          type: string
+          example: monthly
+        is_suggested_by_ai:
+          type: boolean
+          example: false
+        spent:
+          type: number
+          example: 32000
+        remaining:
+          type: number
+          example: 18000
+        percentage:
+          type: number
+          example: 64
+        status:
+          type: string
+          enum: [healthy, warning, over]
+          example: healthy
+        days_remaining:
+          type: integer
+          example: 14
+
+    MerchantBreakdown:
+      type: object
+      properties:
+        merchant:
+          type: string
+          example: Shoprite
+        total:
+          type: number
+          example: 18000
+        percentage_of_budget:
+          type: number
+          example: 36
+        transaction_count:
+          type: integer
+          example: 4
+
+    BudgetTransactionItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 42
+        merchant:
+          type: string
+          example: Shoprite
+        bank:
+          type: string
+          example: Access Bank
+        amount:
+          type: number
+          example: -5000
+        currency:
+          type: string
+          example: NGN
+        ref_amount:
+          type: number
+          example: -5000
+        time:
+          type: string
+          example: '14:32'
+        status:
+          type: string
+          example: verified
+
+    BudgetDateGroup:
+      type: object
+      properties:
+        date_group:
+          type: string
+          example: TODAY
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetTransactionItem'
+
+    BudgetDetail:
+      allOf:
+        - $ref: '#/components/schemas/BudgetWithProgress'
+        - type: object
+          properties:
+            transaction_count:
+              type: integer
+              example: 8
+            merchant_breakdown:
+              type: array
+              items:
+                $ref: '#/components/schemas/MerchantBreakdown'
+            transactions:
+              type: array
+              items:
+                $ref: '#/components/schemas/BudgetDateGroup'
+
+    BudgetSuggestion:
+      type: object
+      properties:
+        category:
+          type: string
+          example: dining
+        suggested_limit:
+          type: number
+          example: 30000
+        message:
+          type: string
+          example: 'Based on your last 3 months, ₦30,000 covers your typical dining spend with a 10% buffer.'
+
+    # ── Goal ─────────────────────────────────────────────────────────────────
+    Goal:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 2
+        name:
+          type: string
+          example: Emergency Fund
+        type:
+          type: string
+          example: emergency_fund
+        targetAmount:
+          type: number
+          nullable: true
+          example: 500000
+        savedAmount:
+          type: number
+          example: 125000
+        currency:
+          type: string
+          example: NGN
+        targetDate:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-12-31T00:00:00.000Z'
+        isActive:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-01-15T10:00:00.000Z'
+        updatedAt:
+          type: string
+          format: date-time
+          example: '2026-05-01T08:00:00.000Z'
+
+    # ── Insight ───────────────────────────────────────────────────────────────
+    Insight:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 7
+        type:
+          type: string
+          example: spending_spike
+        message:
+          type: string
+          example: 'Your dining spend jumped 40% this month — ₦42,000 vs ₦30,000 last month.'
+        contextData:
+          type: object
+          nullable: true
+          example:
+            category: dining
+            current_spend: 42000
+            previous_spend: 30000
+        isRead:
+          type: boolean
+          example: false
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-06-09T02:30:00.000Z'
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-05-09T02:30:00.000Z'
+
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Unauthorized'
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NotFound'
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BadRequest'
+    InternalServerError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InternalServerError'

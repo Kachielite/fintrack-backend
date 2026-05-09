@@ -1,0 +1,28 @@
+import { z } from 'zod';
+import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from './transaction.enum';
+
+export const CorrectTransactionSchema = z.object({
+  merchant: z.string().min(1).optional(),
+  category: z.nativeEnum(CategoryEnum).optional(),
+  transaction_type: z.nativeEnum(TransactionTypeEnum).optional(),
+  amount: z.number().optional(),
+});
+export type CorrectTransactionDTO = z.infer<typeof CorrectTransactionSchema>;
+
+export const TransactionQuerySchema = z.object({
+  page: z.coerce.number().default(1),
+  limit: z.coerce.number().default(20),
+  category: z.nativeEnum(CategoryEnum).optional(),
+  currency: z.string().optional(),
+  bank_id: z.coerce.number().optional(),
+  status: z.nativeEnum(TransactionStatusEnum).optional(),
+  date_from: z.string().datetime().optional(),
+  date_to: z.string().datetime().optional(),
+  search: z.string().optional(),
+});
+export type TransactionQueryDTO = z.infer<typeof TransactionQuerySchema>;
+
+export const TransactionSummaryQuerySchema = z.object({
+  year: z.coerce.number().optional(),
+  month: z.coerce.number().min(1).max(12).optional(),
+});
