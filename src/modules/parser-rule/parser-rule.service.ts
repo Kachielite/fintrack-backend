@@ -12,6 +12,7 @@ import {
 } from './parser-rule.interface';
 import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
+import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 
 export interface IParserRuleService {
   listProductionTemplates(): Promise<ParserTemplateResponseDTO[]>;
@@ -38,6 +39,7 @@ class ParserRuleService implements IParserRuleService {
 
   constructor(
     @inject('IParserRuleRepository') private repository: IParserRuleRepository,
+    @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -100,6 +102,17 @@ Return JSON only in this exact format:
         ],
         response_format: { type: 'json_object' },
       });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'audit_template',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL,
+          templateId: templateId,
+        }).catch(() => null);
+      }
 
       const raw = JSON.parse(response.choices[0].message.content || '{}');
       const result: AuditResult = {
@@ -224,6 +237,16 @@ Return JSON only. Only include fields actually present in the email.`,
         ],
         response_format: { type: 'json_object' },
       });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'generate_template',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL,
+        }).catch(() => null);
+      }
 
       const raw = JSON.parse(response.choices[0].message.content || '{}');
       const template = await this.repository.createTemplate({

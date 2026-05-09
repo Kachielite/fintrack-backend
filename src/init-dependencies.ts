@@ -17,6 +17,7 @@ import { registerExchangeRateDependencies } from '@/modules/exchange-rate/exchan
 import { registerBudgetDependencies } from '@/modules/budget/budget.dependencies';
 import { registerGoalDependencies } from '@/modules/goal/goal.dependencies';
 import { registerInsightDependencies } from '@/modules/insight/insight.dependencies';
+import { registerAdminDependencies } from '@/modules/admin/admin.dependencies';
 
 import AuthController from '@/modules/auth/auth.controller';
 import UserController from '@/modules/user/user.controller';
@@ -28,6 +29,7 @@ import ExchangeRateController from '@/modules/exchange-rate/exchange-rate.contro
 import BudgetController from '@/modules/budget/budget.controller';
 import GoalController from '@/modules/goal/goal.controller';
 import InsightController from '@/modules/insight/insight.controller';
+import AdminController from '@/modules/admin/admin.controller';
 import IngestionService from '@/modules/ingestion/ingestion.service';
 import TransactionService from '@/modules/transaction/transaction.service';
 import logger from '@/common/lib/logger';
@@ -53,6 +55,7 @@ export async function configureContainer(): Promise<void> {
   await registerBudgetDependencies();
   await registerGoalDependencies();
   await registerInsightDependencies();
+  await registerAdminDependencies();
 
   // Resolve all controllers after every token is registered to trigger route wiring
   container.resolve(AuthController);
@@ -65,6 +68,7 @@ export async function configureContainer(): Promise<void> {
   container.resolve(BudgetController);
   container.resolve(GoalController);
   container.resolve(InsightController);
+  container.resolve(AdminController);
 
   cron.schedule(`*/${CONSTANTS.GMAIL_POLL_INTERVAL_MINUTES} * * * *`, async () => {
     const ingestionService = container.resolve(IngestionService);

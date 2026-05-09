@@ -9,4 +9,5 @@ export const ROUTER_TOKENS = {
   BUDGET: Symbol.for('BudgetRouter'),
   GOAL: Symbol.for('GoalRouter'),
   INSIGHT: Symbol.for('InsightRouter'),
+  ADMIN: Symbol.for('AdminRouter'),
 };

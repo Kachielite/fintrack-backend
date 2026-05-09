@@ -30,4 +30,10 @@ export const CONSTANTS = {
   REGEX_REAUDIT_THRESHOLD: parseFloat(process.env.REGEX_REAUDIT_THRESHOLD || '0.60'),
 
   FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'http://localhost:3001',
+
+  ADMIN_JWT_SECRET: process.env.ADMIN_JWT_SECRET as string,
+  ADMIN_JWT_EXPIRES_IN: process.env.ADMIN_JWT_EXPIRES_IN || '4h',
+
+  OPENAI_COST_PER_1K_INPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_INPUT_TOKENS || '0.0025'),
+  OPENAI_COST_PER_1K_OUTPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_OUTPUT_TOKENS || '0.010'),
 };

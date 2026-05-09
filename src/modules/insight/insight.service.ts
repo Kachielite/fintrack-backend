@@ -13,6 +13,7 @@ import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.serv
 import { IUserRepository } from '@/modules/user/user.repository';
 import { InternalServerException } from '@/common/exception';
 import ExchangeRateService from '@/modules/exchange-rate/exchange-rate.service';
+import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 
 export interface IInsightService {
   listInsights(userId: number, query: InsightQueryDTO): Promise<IInsight[]>;
@@ -31,6 +32,7 @@ class InsightService implements IInsightService {
     @inject('IGoalRepository') private goalRepository: IGoalRepository,
     @inject(ExchangeRateService) private exchangeRateService: IExchangeRateService,
     @inject('IUserRepository') private userRepository: IUserRepository,
+    @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -119,6 +121,17 @@ class InsightService implements IInsightService {
         ],
         response_format: { type: 'json_object' },
       });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'generate_insight',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL,
+          userId: userId,
+        }).catch(() => null);
+      }
 
       const raw = JSON.parse(response.choices[0].message.content || '{"insights":[]}');
       const insights: { type: string; message: string; context_data?: unknown }[] =

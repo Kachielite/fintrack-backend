@@ -17,6 +17,7 @@ import { InternalServerException, ResourceNotFoundException } from '@/common/exc
 import logger from '@/common/lib/logger';
 import { CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { BudgetPeriodEnum } from './budget.enum';
+import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 
 const SUGGESTION_CACHE_TTL = 24 * 60 * 60 * 1000;
 const suggestionCache = new Map<number, { data: any[]; cachedAt: number }>();
@@ -39,6 +40,7 @@ class BudgetService implements IBudgetService {
     @inject('ITransactionRepository') private transactionRepository: ITransactionRepository,
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('IBankRepository') private bankRepository: IBankRepository,
+    @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -294,6 +296,17 @@ Return JSON array: [{ "category": string, "suggested_limit": number, "message": 
         ],
         response_format: { type: 'json_object' },
       });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'budget_suggestion',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL,
+          userId: userId,
+        }).catch(() => null);
+      }
 
       const raw = JSON.parse(response.choices[0].message.content || '{"suggestions":[]}');
       const suggestions = raw.suggestions || raw;

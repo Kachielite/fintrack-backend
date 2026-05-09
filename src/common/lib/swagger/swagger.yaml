@@ -631,6 +631,412 @@ components:
           format: date-time
           example: '2026-05-09T02:30:00.000Z'
 
+    # ── Admin Auth ───────────────────────────────────────────────────────────
+    AdminAuthToken:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            access_token: { type: string, example: 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.sig' }
+            expires_in: { type: string, example: '4h' }
+
+    AdminMe:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            id: { type: integer, example: 1 }
+            email: { type: string, example: 'admin@fintrack.app' }
+
+    # ── Admin Overview ────────────────────────────────────────────────────────
+    AdminOverview:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            snapshot_at: { type: string, format: date-time, example: '2026-05-09T20:00:00.000Z' }
+            transactions:
+              type: object
+              properties:
+                total_count: { type: integer, example: 12540 }
+                total_count_30d: { type: integer, example: 340 }
+                handled_by_regex: { type: integer, example: 10200 }
+                handled_by_ai: { type: integer, example: 2340 }
+                regex_rate_pct: { type: number, example: 81.34 }
+                regex_rate_30d_pct: { type: number, example: 84.12 }
+                failed_ingestion_count: { type: integer, example: 7 }
+                unverified_count: { type: integer, example: 42 }
+            regex_engine:
+              type: object
+              properties:
+                total_templates: { type: integer, example: 28 }
+                production: { type: integer, example: 22 }
+                candidate: { type: integer, example: 4 }
+                failed_audit: { type: integer, example: 2 }
+                degrading: { type: integer, example: 1 }
+                avg_confidence_score: { type: number, example: 0.8912 }
+                banks_with_coverage: { type: integer, example: 8 }
+                banks_without_coverage: { type: integer, example: 2 }
+            users:
+              type: object
+              properties:
+                total: { type: integer, example: 1820 }
+                active_30d: { type: integer, example: 312 }
+                plan_free: { type: integer, example: 1400 }
+                plan_pro: { type: integer, example: 350 }
+                plan_premium: { type: integer, example: 70 }
+                onboarding_complete: { type: integer, example: 1600 }
+                email_connected: { type: integer, example: 1750 }
+            ingestion:
+              type: object
+              properties:
+                connections_active: { type: integer, example: 1748 }
+                connections_stale: { type: integer, example: 12 }
+                emails_processed_30d: { type: integer, example: 4230 }
+                emails_failed_30d: { type: integer, example: 27 }
+                avg_parse_time_ms: { type: number, nullable: true, example: null }
+            ai_cost:
+              type: object
+              properties:
+                estimated_cost_today_usd: { type: number, example: 0.043 }
+                estimated_cost_30d_usd: { type: number, example: 1.27 }
+                total_tokens_30d: { type: integer, example: 508000 }
+                cost_per_transaction_30d: { type: number, example: 0.000374 }
+
+    # ── Admin Regex ───────────────────────────────────────────────────────────
+    AdminRegexHealth:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            as_of: { type: string, format: date-time, example: '2026-05-09T20:00:00.000Z' }
+            overall_regex_rate_pct: { type: number, example: 81.34 }
+            trend:
+              type: array
+              items:
+                type: object
+                properties:
+                  date: { type: string, example: '2026-05-09' }
+                  regex_count: { type: integer, example: 112 }
+                  ai_count: { type: integer, example: 21 }
+                  regex_rate_pct: { type: number, example: 84.21 }
+            by_bank:
+              type: array
+              items:
+                type: object
+                properties:
+                  bank_id: { type: integer, example: 1 }
+                  bank_name: { type: string, example: GTBank }
+                  short_code: { type: string, example: gtbank }
+                  production_templates: { type: integer, example: 3 }
+                  avg_confidence: { type: number, example: 0.91 }
+                  transaction_count_30d: { type: integer, example: 280 }
+                  regex_rate_pct: { type: number, example: 92.5 }
+                  correction_rate_pct: { type: number, example: 2.1 }
+                  status: { type: string, enum: [healthy, degrading, no_coverage], example: healthy }
+            templates_added_30d: { type: integer, example: 2 }
+            templates_modified_30d: { type: integer, example: 5 }
+            templates_deprecated_30d: { type: integer, example: 0 }
+
+    AdminRegexTemplateList:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            page: { type: integer, example: 1 }
+            limit: { type: integer, example: 25 }
+            total_items: { type: integer, example: 28 }
+            pages: { type: integer, example: 2 }
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer, example: 4 }
+                  bank_name: { type: string, example: GTBank }
+                  version: { type: integer, example: 3 }
+                  description: { type: string, nullable: true, example: 'GTBank debit alert v3' }
+                  status: { type: string, example: production }
+                  confidence_score: { type: number, example: 0.92 }
+                  match_count: { type: integer, example: 3410 }
+                  fail_count: { type: integer, example: 28 }
+                  correction_count: { type: integer, example: 14 }
+                  created_by: { type: string, example: ai }
+                  audit_passed_at: { type: string, nullable: true, example: '2026-02-01T09:00:00.000Z' }
+                  promoted_at: { type: string, nullable: true, example: '2026-02-02T10:00:00.000Z' }
+                  last_failed_at: { type: string, nullable: true, example: null }
+                  created_at: { type: string, example: '2026-01-28T14:00:00.000Z' }
+
+    AdminAuditQueue:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            total_pending: { type: integer, example: 3 }
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  template_id: { type: integer, example: 17 }
+                  bank_name: { type: string, example: 'Kuda Bank' }
+                  version: { type: integer, example: 1 }
+                  created_at: { type: string, format: date-time, example: '2026-05-08T11:00:00.000Z' }
+                  hours_waiting: { type: number, example: 33.5 }
+                  triggered_by_tx_id: { type: integer, nullable: true, example: 9821 }
+
+    AdminRegexGaps:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            total_banks_with_gaps: { type: integer, example: 2 }
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  bank_id: { type: integer, example: 5 }
+                  bank_name: { type: string, example: Moniepoint }
+                  short_code: { type: string, example: moniepoint }
+                  unhandled_tx_count: { type: integer, example: 47 }
+                  oldest_unhandled_at: { type: string, example: '2026-04-15' }
+                  candidate_template_exists: { type: boolean, example: false }
+
+    AdminRegexCorrections:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  template_id: { type: integer, example: 4 }
+                  bank_name: { type: string, example: GTBank }
+                  description: { type: string, nullable: true, example: 'GTBank debit alert v3' }
+                  status: { type: string, example: production }
+                  match_count: { type: integer, example: 3410 }
+                  correction_count: { type: integer, example: 14 }
+                  correction_rate_pct: { type: number, example: 0.41 }
+                  most_corrected_field: { type: string, nullable: true, example: merchant }
+
+    # ── Admin Ingestion ───────────────────────────────────────────────────────
+    AdminIngestionHealth:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            connections:
+              type: object
+              properties:
+                total: { type: integer, example: 1760 }
+                active: { type: integer, example: 1748 }
+                stale: { type: integer, example: 12 }
+                stale_list:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      connection_id: { type: integer, example: 203 }
+                      gmail_address: { type: string, example: 'user@gmail.com' }
+                      last_synced_at: { type: string, nullable: true, example: '2026-05-07T04:00:00.000Z' }
+                      status: { type: string, example: active }
+            pipeline_30d:
+              type: object
+              properties:
+                emails_processed: { type: integer, example: 4230 }
+                emails_failed: { type: integer, example: 27 }
+                failure_rate_pct: { type: number, example: 0.64 }
+                non_transaction_classified: { type: integer, example: 410 }
+                avg_parse_time_ms: { type: number, nullable: true, example: null }
+            outcomes_30d:
+              type: object
+              properties:
+                parsed: { type: integer, example: 3793 }
+                non_transaction: { type: integer, example: 410 }
+                failed: { type: integer, example: 27 }
+
+    AdminIngestionTimeline:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            from: { type: string, format: date-time, example: '2026-04-09T00:00:00.000Z' }
+            to: { type: string, format: date-time, example: '2026-05-09T00:00:00.000Z' }
+            buckets:
+              type: array
+              items:
+                type: object
+                properties:
+                  date: { type: string, example: '2026-05-09' }
+                  parsed: { type: integer, example: 143 }
+                  failed: { type: integer, example: 1 }
+                  regex_handled: { type: integer, example: 121 }
+                  ai_handled: { type: integer, example: 21 }
+
+    # ── Admin Transactions ────────────────────────────────────────────────────
+    AdminTransactionVolume:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            from: { type: string, format: date-time, example: '2026-04-09T00:00:00.000Z' }
+            to: { type: string, format: date-time, example: '2026-05-09T00:00:00.000Z' }
+            totals:
+              type: object
+              properties:
+                count: { type: integer, example: 340 }
+                debit_count: { type: integer, example: 290 }
+                credit_count: { type: integer, example: 50 }
+                total_debit_ref: { type: number, example: 4820000 }
+                total_credit_ref: { type: number, example: 1230000 }
+            by_bank:
+              type: array
+              items:
+                type: object
+                properties:
+                  bank_name: { type: string, example: GTBank }
+                  count: { type: integer, example: 180 }
+                  total_ref: { type: number, example: 2400000 }
+                  pct_of_total: { type: number, example: 52.94 }
+            by_currency:
+              type: array
+              items:
+                type: object
+                properties:
+                  currency: { type: string, example: NGN }
+                  count: { type: integer, example: 310 }
+                  total_native: { type: number, example: 4820000 }
+                  total_ref: { type: number, example: 4820000 }
+            by_category:
+              type: array
+              items:
+                type: object
+                properties:
+                  category: { type: string, example: food }
+                  count: { type: integer, example: 98 }
+                  total_ref: { type: number, example: 980000 }
+                  pct_of_total: { type: number, example: 28.82 }
+
+    # ── Admin Users ───────────────────────────────────────────────────────────
+    AdminUserStats:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            total_users: { type: integer, example: 1820 }
+            new_users_30d: { type: integer, example: 84 }
+            active_30d: { type: integer, example: 312 }
+            onboarding_funnel:
+              type: object
+              properties:
+                signed_up: { type: integer, example: 1820 }
+                email_connected: { type: integer, example: 1750 }
+                onboarding_complete: { type: integer, example: 1600 }
+                first_transaction_parsed: { type: integer, example: 1420 }
+            by_plan:
+              type: object
+              properties:
+                free: { type: integer, example: 1400 }
+                pro: { type: integer, example: 350 }
+                premium: { type: integer, example: 70 }
+            retention:
+              type: object
+              properties:
+                users_with_tx_last_7d: { type: integer, example: 187 }
+                users_with_tx_last_30d: { type: integer, example: 312 }
+
+    AdminUserRegexStat:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            user_id: { type: integer, example: 42 }
+            email: { type: string, example: 'user@example.com' }
+            total_transactions: { type: integer, example: 284 }
+            handled_by_regex: { type: integer, example: 240 }
+            handled_by_ai: { type: integer, example: 44 }
+            regex_rate_pct: { type: number, example: 84.51 }
+            regex_rate_30d_pct: { type: number, example: 88.0 }
+            most_active_bank: { type: string, nullable: true, example: GTBank }
+            unverified_count: { type: integer, example: 3 }
+
+    # ── Admin AI ──────────────────────────────────────────────────────────────
+    AdminAiUsage:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          properties:
+            from: { type: string, format: date-time, example: '2026-04-09T00:00:00.000Z' }
+            to: { type: string, format: date-time, example: '2026-05-09T00:00:00.000Z' }
+            totals:
+              type: object
+              properties:
+                prompt_tokens: { type: integer, example: 402000 }
+                completion_tokens: { type: integer, example: 106000 }
+                total_tokens: { type: integer, example: 508000 }
+                estimated_cost_usd: { type: number, example: 1.27 }
+                call_count: { type: integer, example: 340 }
+            by_operation:
+              type: array
+              items:
+                type: object
+                properties:
+                  operation: { type: string, example: generate_template }
+                  call_count: { type: integer, example: 120 }
+                  prompt_tokens: { type: integer, example: 180000 }
+                  completion_tokens: { type: integer, example: 40000 }
+                  total_tokens: { type: integer, example: 220000 }
+                  estimated_cost_usd: { type: number, example: 0.85 }
+                  pct_of_total_cost: { type: number, example: 66.93 }
+            trend:
+              type: array
+              items:
+                type: object
+                properties:
+                  date: { type: string, example: '2026-05-09' }
+                  total_tokens: { type: integer, example: 16900 }
+                  estimated_cost_usd: { type: number, example: 0.042 }
+                  call_count: { type: integer, example: 11 }
+            cost_per_transaction_30d: { type: number, example: 0.000374 }
+            cost_per_transaction_trend:
+              type: array
+              items:
+                type: object
+                properties:
+                  date: { type: string, example: '2026-05-09' }
+                  cost_per_tx: { type: number, example: 0.000391 }
+
   responses:
     Unauthorized:
       description: Unauthorized
