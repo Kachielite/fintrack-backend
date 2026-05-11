@@ -47,6 +47,7 @@ class BudgetService implements IBudgetService {
 
   async listBudgets(userId: number): Promise<BudgetWithProgressDTO[]> {
     try {
+      logger.info(`[Budget] Listing budgets for user ${userId}`);
       const budgets = await this.budgetRepository.findAllActive(userId);
       return Promise.all(budgets.map((b) => this.attachProgress(b, userId)));
     } catch (error) {
@@ -57,6 +58,7 @@ class BudgetService implements IBudgetService {
 
   async createBudget(userId: number, data: CreateBudgetDTO): Promise<BudgetWithProgressDTO> {
     try {
+      logger.info(`[Budget] Creating budget for user ${userId} (category=${data.category})`);
       const budget = await this.budgetRepository.create({
         userId,
         category: data.category,
@@ -77,6 +79,7 @@ class BudgetService implements IBudgetService {
     data: UpdateBudgetDTO,
   ): Promise<BudgetWithProgressDTO> {
     try {
+      logger.info(`[Budget] Updating budget ${id} for user ${userId}`);
       const existing = await this.budgetRepository.findById(id, userId);
       if (!existing) throw new ResourceNotFoundException('Budget not found');
 
@@ -101,6 +104,7 @@ class BudgetService implements IBudgetService {
 
   async deleteBudget(id: number, userId: number): Promise<IGeneralResponse<null>> {
     try {
+      logger.info(`[Budget] Deleting budget ${id} for user ${userId}`);
       const existing = await this.budgetRepository.findById(id, userId);
       if (!existing) throw new ResourceNotFoundException('Budget not found');
       await this.budgetRepository.deactivate(id, userId);
@@ -114,6 +118,7 @@ class BudgetService implements IBudgetService {
 
   async getBudgetDetail(id: number, userId: number): Promise<BudgetDetailDTO> {
     try {
+      logger.info(`[Budget] Fetching detail for budget ${id} (user ${userId})`);
       const budget = await this.budgetRepository.findById(id, userId);
       if (!budget) throw new ResourceNotFoundException('Budget not found');
 
@@ -239,6 +244,7 @@ class BudgetService implements IBudgetService {
 
   async getBudgetSuggestions(userId: number): Promise<any[]> {
     try {
+      logger.info(`[Budget] Fetching AI budget suggestions for user ${userId}`);
       const cached = suggestionCache.get(userId);
       if (cached && Date.now() - cached.cachedAt < SUGGESTION_CACHE_TTL) {
         return cached.data;

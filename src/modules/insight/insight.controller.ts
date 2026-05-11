@@ -1,6 +1,6 @@
 import { inject, injectable } from 'tsyringe';
 import express, { Request } from 'express';
-import { BaseController, Controller, Get, Patch } from '@/common/decorators/controller.decorator';
+import { BaseController, Controller, Get, Patch, Post } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import InsightService, { IInsightService } from './insight.service';
 import { InsightQuerySchema, InsightQueryDTO } from './insight.dto';
@@ -84,6 +84,13 @@ class InsightController extends BaseController {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
     return await this.service.markRead(id, userId);
+  }
+
+  @Post('/generate', { statusCode: 202 })
+  async generate(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    this.service.generateForUser(userId).catch(() => null);
+    return { message: 'Insight generation started' };
   }
 }
 

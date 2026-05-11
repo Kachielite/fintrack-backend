@@ -39,6 +39,7 @@ class AuthService implements IAuthService {
 
   async googleAuth(data: GoogleAuthDTO): Promise<AuthResponseDTO> {
     try {
+      logger.info('[Auth] Google auth attempt');
       const ticket = await this.googleClient.verifyIdToken({
         idToken: data.id_token,
         audience: [CONSTANTS.GOOGLE_CLIENT_ID, CONSTANTS.GOOGLE_WEB_CLIENT_ID].filter(Boolean),
@@ -64,6 +65,7 @@ class AuthService implements IAuthService {
 
   async appleAuth(data: AppleAuthDTO): Promise<AuthResponseDTO> {
     try {
+      logger.info('[Auth] Apple auth attempt');
       const decoded = await this.verifyAppleToken(data.id_token);
 
       return await this.upsertUserAndIssueTokens({
@@ -82,6 +84,7 @@ class AuthService implements IAuthService {
 
   async refreshToken(data: RefreshTokenDTO): Promise<Pick<AuthResponseDTO, 'access_token'>> {
     try {
+      logger.info('[Auth] Refreshing access token');
       const decoded = jwt.verify(data.refresh_token, CONSTANTS.JWT_SECRET) as {
         id: number;
         type: string;
@@ -110,6 +113,7 @@ class AuthService implements IAuthService {
 
   async logout(userId: number): Promise<void> {
     try {
+      logger.info(`[Auth] Logging out user ${userId}`);
       await this.userRepository.updateRefreshTokenHash(userId, null);
     } catch (error) {
       logger.error(`Logout error - ${error}`);
@@ -162,6 +166,7 @@ class AuthService implements IAuthService {
       user = existingUser;
     }
 
+    logger.info(`[Auth] Issued tokens for user ${user.id} (${existing ? 'existing' : 'new'})`);
     const accessToken = this.issueAccessToken(user.id, user.email);
     const refreshToken = this.issueRefreshToken(user.id);
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');

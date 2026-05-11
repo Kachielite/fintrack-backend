@@ -43,6 +43,7 @@ class TransactionService implements ITransactionService {
     query: TransactionQueryDTO,
   ): Promise<IPagination<ITransaction>> {
     try {
+      logger.info(`[Transaction] Listing transactions for user ${userId}`);
       return await this.transactionRepository.findAll({
         userId,
         page: query.page,
@@ -67,6 +68,7 @@ class TransactionService implements ITransactionService {
     month?: number,
   ): Promise<Record<string, unknown>> {
     try {
+      logger.info(`[Transaction] Getting summary for user ${userId} (year=${year}, month=${month})`);
       const now = new Date();
       const y = year || now.getFullYear();
       const m = month !== undefined ? month : now.getMonth() + 1;
@@ -144,6 +146,7 @@ class TransactionService implements ITransactionService {
 
   async getTransaction(id: number, userId: number): Promise<ITransaction> {
     try {
+      logger.info(`[Transaction] Fetching transaction ${id} for user ${userId}`);
       const transaction = await this.transactionRepository.findById(id, userId);
       if (!transaction) throw new ResourceNotFoundException('Transaction not found');
       return transaction;
@@ -160,6 +163,7 @@ class TransactionService implements ITransactionService {
     data: CorrectTransactionDTO,
   ): Promise<ITransaction> {
     try {
+      logger.info(`[Transaction] Correcting transaction ${id} for user ${userId}`);
       const transaction = await this.transactionRepository.findById(id, userId);
       if (!transaction) throw new ResourceNotFoundException('Transaction not found');
 
@@ -189,6 +193,7 @@ class TransactionService implements ITransactionService {
 
   async getUnverified(userId: number): Promise<ITransaction[]> {
     try {
+      logger.info(`[Transaction] Fetching unverified transactions for user ${userId}`);
       return await this.transactionRepository.findUnverified(userId);
     } catch (error) {
       logger.error(`Error fetching unverified transactions for user ${userId} - ${error}`);

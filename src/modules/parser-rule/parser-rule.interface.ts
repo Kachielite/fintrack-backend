@@ -45,6 +45,7 @@ export interface ParsedTransaction {
   currency?: string;
   merchant?: string;
   transactionType?: string;
+  category?: string;
   date?: string;
   balance?: number;
   reference?: string;

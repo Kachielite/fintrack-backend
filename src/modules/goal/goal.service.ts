@@ -20,6 +20,7 @@ class GoalService implements IGoalService {
 
   async listGoals(userId: number): Promise<IGoal[]> {
     try {
+      logger.info(`[Goal] Listing goals for user ${userId}`);
       return await this.goalRepository.findAllByUser(userId);
     } catch (error) {
       logger.error(`Error listing goals for user ${userId} - ${error}`);
@@ -29,6 +30,7 @@ class GoalService implements IGoalService {
 
   async createGoal(userId: number, data: CreateGoalDTO): Promise<IGoal> {
     try {
+      logger.info(`[Goal] Creating goal "${data.name}" for user ${userId}`);
       return await this.goalRepository.create({
         userId,
         name: data.name,
@@ -45,6 +47,7 @@ class GoalService implements IGoalService {
 
   async updateGoal(id: number, userId: number, data: UpdateGoalDTO): Promise<IGoal> {
     try {
+      logger.info(`[Goal] Updating goal ${id} for user ${userId}`);
       const existing = await this.goalRepository.findById(id, userId);
       if (!existing) throw new ResourceNotFoundException('Goal not found');
 
@@ -64,6 +67,7 @@ class GoalService implements IGoalService {
 
   async deleteGoal(id: number, userId: number): Promise<IGeneralResponse<null>> {
     try {
+      logger.info(`[Goal] Deleting goal ${id} for user ${userId}`);
       const existing = await this.goalRepository.findById(id, userId);
       if (!existing) throw new ResourceNotFoundException('Goal not found');
       await this.goalRepository.delete(id, userId);

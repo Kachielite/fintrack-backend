@@ -80,7 +80,12 @@ function buildValidationMiddleware(validate: RouteOptions['validate']) {
         if (schemas.query) {
           const r = schemas.query.safeParse(req.query);
           if (!r.success) throw new BadRequestException(formatZodError(r.error as any));
-          (req as any).query = r.data;
+          Object.defineProperty(req, 'query', {
+            configurable: true,
+            enumerable: true,
+            writable: true,
+            value: r.data,
+          });
         }
       }
       next();

@@ -18,7 +18,12 @@ import NotificationService, { INotificationService } from '@/modules/notificatio
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d{1,3}(?:,\d{3})*(?:\.\d{2})?\b/;
-const NON_TRANSACTION_KEYWORDS = ['otp', 'one time password', 'promotional', 'marketing', 'statement'];
+const NON_TRANSACTION_KEYWORDS = [
+  'otp', 'one time password', 'promotional', 'marketing', 'statement',
+  'how did you feel', 'how was your experience', 'rate your experience',
+  'customer satisfaction', 'satisfaction survey', 'kindly rate', 'share your feedback',
+  'how do you rate', 'unsubscribe', 'privacy policy',
+];
 
 type TriggerSource = 'cron' | 'manual';
 
@@ -106,8 +111,8 @@ class IngestionService implements IIngestionService {
 
       for (const msg of messages) {
         if (!msg.id) continue;
-        const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessed(
-          connectionId,
+        const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessedForUser(
+          connection.userId,
           msg.id,
         );
         doneIndex++;
@@ -199,8 +204,12 @@ class IngestionService implements IIngestionService {
     fromAddress: string,
   ): Promise<boolean> {
     try {
-      const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessed(
-        connectionId,
+      const connection = await this.connectionRepository.findByIdOnly(connectionId);
+      const userId = connection?.userId;
+      if (!userId) return false;
+
+      const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessedForUser(
+        userId,
         messageId,
       );
       if (alreadyProcessed) return false;
@@ -249,10 +258,6 @@ class IngestionService implements IIngestionService {
         });
         return false;
       }
-
-      const connection = await this.connectionRepository.findByIdOnly(connectionId);
-      const userId = connection?.userId;
-      if (!userId) return false;
 
       const user = await this.userRepository.findById(userId);
       if (!user) return false;
@@ -334,13 +339,14 @@ class IngestionService implements IIngestionService {
 
       const exchangeRate = await this.exchangeRateService.getRate(extractedCurrency, user.refCurrency);
 
+      const extractedDate = extracted.date ? new Date(extracted.date) : null;
       const transaction = await this.transactionRepository.create({
         userId,
         emailConnectionId: connectionId,
         bankId: bank.id,
         gmailMessageId: messageId,
         merchant: (extracted.merchant as string) || 'Unknown',
-        category: CategoryEnum.OTHER,
+        category: (extracted.category as CategoryEnum) || CategoryEnum.OTHER,
         transactionType:
           (extracted.transactionType as TransactionTypeEnum) || TransactionTypeEnum.DEBIT,
         amount: (extracted.amount as number) || 0,
@@ -348,7 +354,7 @@ class IngestionService implements IIngestionService {
         refAmount,
         refCurrency: user.refCurrency,
         exchangeRateUsed: exchangeRate,
-        transactionDate: new Date(),
+        transactionDate: extractedDate && !isNaN(extractedDate.getTime()) ? extractedDate : new Date(),
         status: TransactionStatusEnum.UNVERIFIED,
         reference: extracted.reference as string | undefined,
         balance: extracted.balance as number | undefined,

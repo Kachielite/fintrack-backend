@@ -87,6 +87,29 @@ class InsightService implements IInsightService {
         }),
       );
 
+      const debits = transactions.filter((t) => t.amount < 0);
+
+      const top_merchants = Object.entries(
+        debits.reduce((acc: Record<string, number>, t) => {
+          const name = t.merchant || 'Unknown';
+          acc[name] = (acc[name] || 0) + Math.abs(t.refAmount);
+          return acc;
+        }, {}),
+      )
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 15)
+        .map(([merchant, total]) => ({ merchant, total }));
+
+      const top_categories = Object.entries(
+        debits.reduce((acc: Record<string, number>, t) => {
+          acc[t.category] = (acc[t.category] || 0) + Math.abs(t.refAmount);
+          return acc;
+        }, {}),
+      )
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([cat, total]) => ({ category: cat, total }));
+
       const context = {
         total_spend_last_30_days: totalSpend,
         ref_currency: user.refCurrency,
@@ -94,17 +117,8 @@ class InsightService implements IInsightService {
         advisor_tone: user.advisorTone,
         budget_progress: budgetProgress,
         goals: goals.map((g) => ({ name: g.name, type: g.type, target: g.targetAmount, saved: g.savedAmount })),
-        top_categories: Object.entries(
-          transactions
-            .filter((t) => t.amount < 0)
-            .reduce((acc: Record<string, number>, t) => {
-              acc[t.category] = (acc[t.category] || 0) + Math.abs(t.refAmount);
-              return acc;
-            }, {}),
-        )
-          .sort(([, a], [, b]) => b - a)
-          .slice(0, 5)
-          .map(([cat, total]) => ({ category: cat, total })),
+        top_categories,
+        top_merchants,
       };
 
       const response = await this.openai.chat.completions.create({
@@ -112,7 +126,7 @@ class InsightService implements IInsightService {
         messages: [
           {
             role: 'system',
-            content: `You are Iris, a warm and non-judgmental personal financial advisor. You observe patterns in a user's spending data and surface one to three insights that are specific, actionable, and forward-looking. You never shame. You always frame observations as opportunities. The user's goal is ${user.goalType} and their preferred tone is ${user.advisorTone}. Return a JSON array of insight objects: [{ type, message, context_data }]. Message must be 1–2 sentences. Return JSON only.`,
+            content: `You are Iris, a warm and non-judgmental personal financial advisor. You observe patterns in a user's spending data and surface one to three insights that are specific, actionable, and forward-looking. You never shame. You always frame observations as opportunities. The user's goal is ${user.goalType} and their preferred tone is ${user.advisorTone}. You will receive top_merchants (actual merchant names like Glovo, Netflix, Apple, etc.) — use these to infer what the user is actually spending on, even if the category is listed as "other". Name specific merchants in your insights when relevant. Return a JSON array of insight objects: [{ type, message, context_data }]. Message must be 1–2 sentences. Return JSON only.`,
           },
           {
             role: 'user',

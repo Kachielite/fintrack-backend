@@ -16,6 +16,7 @@ class BankService implements IBankService {
 
   async listBanks(): Promise<BankResponseDTO[]> {
     try {
+      logger.info('[Bank] Listing all banks');
       const banks = await this.bankRepository.findAll();
       return banks.map((b) => this.mapToDTO(b));
     } catch (error) {
@@ -26,6 +27,7 @@ class BankService implements IBankService {
 
   async getBank(id: number): Promise<BankResponseDTO> {
     try {
+      logger.info(`[Bank] Fetching bank ${id}`);
       const bank = await this.bankRepository.findById(id);
       if (!bank) throw new ResourceNotFoundException('Bank not found');
       return this.mapToDTO(bank);

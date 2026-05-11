@@ -23,6 +23,7 @@ class UserService implements IUserService {
 
   async getMe(userId: number): Promise<UserResponseDTO> {
     try {
+      logger.info(`[User] Fetching profile for user ${userId}`);
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
       return this.mapToDTO(user);
@@ -35,6 +36,7 @@ class UserService implements IUserService {
 
   async updateMe(userId: number, data: UpdateUserDTO): Promise<UserResponseDTO> {
     try {
+      logger.info(`[User] Updating profile for user ${userId}`);
       const updateData: Partial<IUpdateUser> = {};
       if (data.first_name) updateData.firstName = data.first_name;
       if (data.last_name !== undefined) updateData.lastName = data.last_name;
@@ -51,6 +53,7 @@ class UserService implements IUserService {
 
   async completeOnboarding(userId: number, data: CompleteOnboardingDTO): Promise<UserResponseDTO> {
     try {
+      logger.info(`[User] Completing onboarding for user ${userId}`);
       const onboardingData: ICompleteOnboarding = {
         goalType: data.goal_type,
         incomeRange: data.income_range,
@@ -67,6 +70,7 @@ class UserService implements IUserService {
 
   async deleteMe(userId: number): Promise<IGeneralResponse<null>> {
     try {
+      logger.info(`[User] Deleting account for user ${userId}`);
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
       await this.userRepository.deleteUser(userId);

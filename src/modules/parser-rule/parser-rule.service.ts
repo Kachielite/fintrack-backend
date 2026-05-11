@@ -232,28 +232,52 @@ Return JSON only in this exact format:
         messages: [
           {
             role: 'system',
-            content: 'You are a financial data extractor. Extract transaction details from bank notification emails. Return JSON only.',
+            content: `You are a financial data extractor. Extract transaction details from bank notification emails. Return JSON only.
+
+NON-TRANSACTION EMAILS — return { "is_transaction": false } immediately if the email is:
+- A satisfaction/feedback survey ("How did you feel about this service?", "Rate your experience", "How was your visit?", "kindly rate", "share your feedback")
+- A marketing or promotional offer
+- An OTP or security verification code
+- An account statement summary (not a single transaction alert)
+- An unsubscribe confirmation or privacy notice
+
+MERCHANT NAME RULES — clean up raw payment processor strings:
+- Strip prefixes: "PWL*", "WEB PYMT ", "PADDLE.NET* ", "PAYPAL *", "POS ", "ATM "
+- Strip location suffixes like " NAIROBI KE", " LAGOS NG", " LONDON GB", " ACCRA GH"
+- Strip account/tracking IDs: trailing patterns like "_ZUFPAN177702590" or " *XF82KQPW"
+- Examples: "PWL*GLOVO NAIROBI KE" → "Glovo"; "SPOTIFY_ZUFPAN177702590" → "Spotify"; "WEB PYMT PADDLE.NET* ENHANCV LONDON GB" → "Enhancv"
+
+CATEGORY CLASSIFICATION — pick the best fit:
+- food: Glovo, Uber Eats, Jumia Food, Bolt Food, Mr. Delivery, Takeaway, KFC, McDonald's, Domino's, Chicken Republic, Burger King, Chipotle, restaurants, cafes
+- subs: Netflix, Spotify, Apple, Google One, YouTube Premium, AccelerateTV, Showmax, DSTV, GOtv, Claude.ai, Anthropic, OpenAI, Midjourney, GitHub, Microsoft 365, Adobe, Dropbox, iCloud, Amazon Prime, Canva, Figma, Notion, Slack, Zoom
+- utility: Airtel, MTN, Glo, 9mobile, Safaricom, Vodacom, PHCN, AEDC, IKEDC, EKEDC, electricity, water, internet bill, broadband, DECO, KCCL, Cloudflare, DigitalOcean, AWS, GCP, Azure (hosting/infra counts as utility)
+- transit: Uber, Bolt, Taxify, Lyft, bus, train, LASMA, toll, fuel, petrol, parking, airline, flight
+- health: pharmacy, hospital, clinic, medical, dental, optician, gym, fitness
+- fun: cinema, concerts, sports betting, games, streaming (if not a sub), events
+- transfer: ONLY when the merchant/recipient appears to be an individual person's full name (e.g. "MADUMERE PAMELA", "GAFARI OLARINOYE AMINU") AND there are no business entity keywords (Ltd, Inc, Corp, PLC, Co., Bank, Store, Market, Shop)
+- other: anything that does not clearly match the above`,
           },
           {
             role: 'user',
             content: `Bank: ${bankName}
 Subject: ${emailSubject}
 Body:
-${emailBody.substring(0, 2000)}
+${emailBody.substring(0, 2500)}
 
-Extract the transaction details and return JSON:
+Return JSON:
 {
   "is_transaction": true,
-  "amount": <positive number, no symbols or commas>,
-  "currency": "<ISO 4217 code, e.g. NGN, USD, GBP>",
-  "merchant": "<merchant or recipient name, or null>",
-  "transaction_type": "debit" or "credit",
-  "balance": <account balance number if present, else null>,
-  "reference": "<transaction ref if present, else null>"
+  "amount": <positive number, no currency symbols or commas>,
+  "currency": "<ISO 4217 code, e.g. NGN, USD, GBP, KES>",
+  "merchant": "<clean merchant or recipient name>",
+  "transaction_type": "debit" | "credit",
+  "category": "food" | "transit" | "utility" | "subs" | "transfer" | "fun" | "health" | "other",
+  "transaction_date": "<date in YYYY-MM-DD format extracted from the email body, or null if not found>",
+  "balance": <account balance number after transaction, or null>,
+  "reference": "<transaction reference/ID if present, else null>"
 }
 
-If this is not a transaction notification, return { "is_transaction": false }.
-Only include fields that are clearly present in the email.`,
+If this is not a transaction notification, return { "is_transaction": false }.`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -277,6 +301,8 @@ Only include fields that are clearly present in the email.`,
       if (raw.currency) result.currency = raw.currency;
       if (raw.merchant) result.merchant = raw.merchant;
       if (raw.transaction_type) result.transactionType = raw.transaction_type;
+      if (raw.category) result.category = raw.category;
+      if (raw.transaction_date) result.date = raw.transaction_date;
       if (raw.balance != null) result.balance = Number(raw.balance);
       if (raw.reference) result.reference = raw.reference;
       return result;

@@ -2,10 +2,12 @@ import { inject, injectable } from 'tsyringe';
 import { and, eq } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { ProcessedEmailSchema } from './ingestion.schema';
+import { EmailConnectionSchema } from '@/modules/email-connection/email-connection.schema';
 import { IProcessedEmail, ICreateProcessedEmail } from './ingestion.interface';
 
 export interface IIngestionRepository {
   isAlreadyProcessed(connectionId: number, gmailMessageId: string): Promise<boolean>;
+  isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean>;
   markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail>;
 }
 
@@ -20,6 +22,24 @@ class IngestionRepositoryImpl implements IIngestionRepository {
       .where(
         and(
           eq(ProcessedEmailSchema.emailConnectionId, connectionId),
+          eq(ProcessedEmailSchema.gmailMessageId, gmailMessageId),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean> {
+    const rows = await this.db.client
+      .select({ id: ProcessedEmailSchema.id })
+      .from(ProcessedEmailSchema)
+      .innerJoin(
+        EmailConnectionSchema,
+        eq(ProcessedEmailSchema.emailConnectionId, EmailConnectionSchema.id),
+      )
+      .where(
+        and(
+          eq(EmailConnectionSchema.userId, userId),
           eq(ProcessedEmailSchema.gmailMessageId, gmailMessageId),
         ),
       )
