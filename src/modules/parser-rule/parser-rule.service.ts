@@ -8,6 +8,7 @@ import {
   IParserTemplate,
   IParserTemplateWithRules,
   ParsedTransaction,
+  TemplateParseResult,
   AuditResult,
 } from './parser-rule.interface';
 import { ParserTemplateResponseDTO } from './parser-rule.dto';
@@ -29,7 +30,7 @@ export interface IParserRuleService {
     bankId: number,
     emailBody: string,
     emailSubject: string,
-  ): Promise<ParsedTransaction | null>;
+  ): Promise<TemplateParseResult | null>;
   extractTransaction(
     bankName: string,
     emailBody: string,
@@ -125,7 +126,7 @@ Return JSON only in this exact format:
           promptTokens: response.usage.prompt_tokens,
           completionTokens: response.usage.completion_tokens,
           totalTokens: response.usage.total_tokens,
-          modelUsed: CONSTANTS.OPENAI_MODEL,
+          modelUsed: CONSTANTS.OPENAI_MODEL_AUDIT,
           templateId: templateId,
         }).catch(() => null);
       }
@@ -150,6 +151,10 @@ Return JSON only in this exact format:
       return result;
     } catch (error) {
       if (error instanceof ResourceNotFoundException) throw error;
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate-limited while auditing template ${templateId}`);
+        throw new InternalServerException('OpenAI rate limit reached while auditing template');
+      }
       logger.error(`Error auditing template ${templateId} - ${error}`);
       throw new InternalServerException('Failed to audit template');
     }
@@ -176,7 +181,7 @@ Return JSON only in this exact format:
     bankId: number,
     emailBody: string,
     emailSubject: string,
-  ): Promise<ParsedTransaction | null> {
+  ): Promise<TemplateParseResult | null> {
     try {
       const templates = await this.repository.findProductionTemplatesByBank(bankId);
       if (templates.length === 0) return null;
@@ -211,7 +216,10 @@ Return JSON only in this exact format:
         }
 
         if (allMatched && Object.keys(result).length > 0) {
-          return result;
+          return {
+            templateId: template.id,
+            parsed: result,
+          };
         }
       }
       return null;
@@ -307,6 +315,10 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
       if (raw.reference) result.reference = raw.reference;
       return result;
     } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate-limited while extracting transaction for bank ${bankName}`);
+        return null;
+      }
       logger.error(`Error extracting transaction for bank ${bankName} - ${error}`);
       return null;
     }
@@ -393,6 +405,10 @@ Return JSON:
 
       return template;
     } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate-limited while generating template for bank ${bankId}`);
+        throw new InternalServerException('OpenAI rate limit reached while generating template');
+      }
       logger.error(`Error generating template for bank ${bankId} - ${error}`);
       throw new InternalServerException('Failed to generate parser template');
     }
@@ -434,7 +450,7 @@ country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
           promptTokens: response.usage.prompt_tokens,
           completionTokens: response.usage.completion_tokens,
           totalTokens: response.usage.total_tokens,
-          modelUsed: CONSTANTS.OPENAI_MODEL,
+          modelUsed: CONSTANTS.OPENAI_MODEL_CLASSIFY,
         }).catch(() => null);
       }
 
@@ -442,9 +458,18 @@ country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
       if (!raw.is_bank) return null;
       return { name: raw.bank_name, shortCode: raw.short_code, country: raw.country };
     } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn(`Rate-limited while identifying bank for sender ${senderEmail}`);
+        return null;
+      }
       logger.error(`Error identifying bank from email ${senderEmail} - ${error}`);
       return null;
     }
+  }
+
+  private isRateLimitError(error: unknown): boolean {
+    const e = error as { status?: number; message?: string };
+    return e?.status === 429 || (e?.message || '').includes('429');
   }
 
   async recordMatch(templateId: number): Promise<void> {

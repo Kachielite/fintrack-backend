@@ -54,7 +54,7 @@ function isZodSchema(v: unknown): v is ZodSchema {
 }
 
 function buildValidationMiddleware(validate: RouteOptions['validate']) {
-  return (req: Request, _res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!validate) return next();
 
@@ -80,12 +80,7 @@ function buildValidationMiddleware(validate: RouteOptions['validate']) {
         if (schemas.query) {
           const r = schemas.query.safeParse(req.query);
           if (!r.success) throw new BadRequestException(formatZodError(r.error as any));
-          Object.defineProperty(req, 'query', {
-            configurable: true,
-            enumerable: true,
-            writable: true,
-            value: r.data,
-          });
+          res.locals.validatedQuery = r.data;
         }
       }
       next();
@@ -117,7 +112,13 @@ export class BaseController {
         middleware,
         async (req: Request, res: Response, next: NextFunction) => {
           try {
-            const result = await handler(req);
+            const requestForHandler = res.locals.validatedQuery === undefined
+              ? req
+              : ({
+                  ...req,
+                  query: res.locals.validatedQuery,
+                } as Request);
+            const result = await handler(requestForHandler);
             res.status(statusCode).json(result);
           } catch (err) {
             next(err);

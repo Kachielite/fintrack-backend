@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, between, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
+import { and, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
 import { ITransaction, ICreateTransaction, ITransactionFilter } from './transaction.interface';
@@ -15,6 +15,15 @@ export interface ITransactionRepository {
   delete(id: number, userId: number): Promise<void>;
   deleteOlderThan(userId: number, cutoffDate: Date): Promise<void>;
   findForSummary(userId: number, from: Date, to: Date): Promise<ITransaction[]>;
+  existsSimilarTransaction(input: {
+    userId: number;
+    bankId?: number;
+    currency: string;
+    amountAbs: number;
+    reference?: string;
+    merchant: string;
+    transactionDate: Date;
+  }): Promise<boolean>;
 }
 
 @injectable()
@@ -149,6 +158,41 @@ class TransactionRepositoryImpl implements ITransactionRepository {
           lte(TransactionSchema.transactionDate, to),
         ),
       )) as ITransaction[];
+  }
+
+  async existsSimilarTransaction(input: {
+    userId: number;
+    bankId?: number;
+    currency: string;
+    amountAbs: number;
+    reference?: string;
+    merchant: string;
+    transactionDate: Date;
+  }): Promise<boolean> {
+    const from = new Date(input.transactionDate.getTime() - 24 * 60 * 60 * 1000);
+    const to = new Date(input.transactionDate.getTime() + 24 * 60 * 60 * 1000);
+    const normalizedMerchant = input.merchant.trim().toLowerCase();
+    const conditions = [
+      eq(TransactionSchema.userId, input.userId),
+      eq(TransactionSchema.currency, input.currency),
+      sql`abs(${TransactionSchema.amount}) between ${input.amountAbs - 0.01} and ${input.amountAbs + 0.01}`,
+      gte(TransactionSchema.transactionDate, from),
+      lte(TransactionSchema.transactionDate, to),
+      sql`lower(${TransactionSchema.merchant}) = ${normalizedMerchant}`,
+    ];
+
+    if (input.bankId) conditions.push(eq(TransactionSchema.bankId, input.bankId));
+    if (input.reference) {
+      conditions.push(eq(TransactionSchema.reference, input.reference));
+    }
+
+    const rows = await this.db.client
+      .select({ id: TransactionSchema.id })
+      .from(TransactionSchema)
+      .where(and(...conditions))
+      .limit(1);
+
+    return rows.length > 0;
   }
 }
 

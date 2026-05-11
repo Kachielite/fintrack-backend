@@ -283,7 +283,7 @@ class BudgetService implements IBudgetService {
       }
 
       const response = await this.openai.chat.completions.create({
-        model: CONSTANTS.OPENAI_MODEL,
+        model: CONSTANTS.OPENAI_MODEL_BUDGET,
         messages: [
           {
             role: 'system',
@@ -309,7 +309,7 @@ Return JSON array: [{ "category": string, "suggested_limit": number, "message": 
           promptTokens: response.usage.prompt_tokens,
           completionTokens: response.usage.completion_tokens,
           totalTokens: response.usage.total_tokens,
-          modelUsed: CONSTANTS.OPENAI_MODEL,
+          modelUsed: CONSTANTS.OPENAI_MODEL_BUDGET,
           userId: userId,
         }).catch(() => null);
       }

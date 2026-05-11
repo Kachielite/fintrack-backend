@@ -8,7 +8,7 @@ import { IProcessedEmail, ICreateProcessedEmail } from './ingestion.interface';
 export interface IIngestionRepository {
   isAlreadyProcessed(connectionId: number, gmailMessageId: string): Promise<boolean>;
   isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean>;
-  markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail>;
+  markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail | null>;
 }
 
 @injectable()
@@ -47,7 +47,7 @@ class IngestionRepositoryImpl implements IIngestionRepository {
     return rows.length > 0;
   }
 
-  async markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail> {
+  async markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail | null> {
     const [row] = await this.db.client
       .insert(ProcessedEmailSchema)
       .values({
@@ -56,8 +56,9 @@ class IngestionRepositoryImpl implements IIngestionRepository {
         outcome: data.outcome,
         transactionId: data.transactionId,
       })
+      .onConflictDoNothing()
       .returning();
-    return row as IProcessedEmail;
+    return (row as IProcessedEmail) ?? null;
   }
 }
 

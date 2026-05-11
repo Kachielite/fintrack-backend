@@ -1,6 +1,28 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+type OpenAIMode = 'quality' | 'cost' | 'balanced';
+
+function normalizeOpenAIMode(value: string | undefined): OpenAIMode {
+  const normalized = (value || 'balanced').toLowerCase();
+  if (normalized === 'quality' || normalized === 'cost' || normalized === 'balanced') {
+    return normalized;
+  }
+  return 'balanced';
+}
+
+function resolveModel(
+  override: string | undefined,
+  mode: OpenAIMode,
+  byMode: Record<OpenAIMode, string>,
+): string {
+  if (override && override.toLowerCase() !== 'auto') return override;
+  return byMode[mode];
+}
+
+const OPENAI_MODE = normalizeOpenAIMode(process.env.OPENAI_MODE);
+const OPENAI_MODEL_DEFAULT = process.env.OPENAI_MODEL || 'gpt-4o';
+
 export const CONSTANTS = {
   PORT: process.env.PORT || '3000',
   DATABASE_URL: process.env.DATABASE_URL as string,
@@ -19,12 +41,39 @@ export const CONSTANTS = {
   APPLE_PRIVATE_KEY: process.env.APPLE_PRIVATE_KEY as string,
 
   OPENAI_API_KEY: process.env.OPENAI_API_KEY as string,
-  OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
-  // Per-operation model overrides
-  OPENAI_MODEL_EXTRACTION: process.env.OPENAI_MODEL_EXTRACTION || 'gpt-4o-mini',
-  OPENAI_MODEL_TEMPLATE: process.env.OPENAI_MODEL_TEMPLATE || 'gpt-4o',
-  OPENAI_MODEL_AUDIT: process.env.OPENAI_MODEL_AUDIT || 'gpt-4o',
-  OPENAI_MODEL_CLASSIFY: process.env.OPENAI_MODEL_CLASSIFY || 'gpt-4o-mini',
+  OPENAI_MODE,
+  OPENAI_MODEL: OPENAI_MODEL_DEFAULT,
+  // Use OPENAI_MODE profile unless an operation-specific override is provided.
+  OPENAI_MODEL_EXTRACTION: resolveModel(process.env.OPENAI_MODEL_EXTRACTION, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: 'gpt-4o-mini',
+    cost: 'gpt-4o-mini',
+  }),
+  OPENAI_MODEL_TEMPLATE: resolveModel(process.env.OPENAI_MODEL_TEMPLATE, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: OPENAI_MODEL_DEFAULT,
+    cost: 'gpt-4o-mini',
+  }),
+  OPENAI_MODEL_AUDIT: resolveModel(process.env.OPENAI_MODEL_AUDIT, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: OPENAI_MODEL_DEFAULT,
+    cost: 'gpt-4o-mini',
+  }),
+  OPENAI_MODEL_CLASSIFY: resolveModel(process.env.OPENAI_MODEL_CLASSIFY, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: 'gpt-4o-mini',
+    cost: 'gpt-4o-mini',
+  }),
+  OPENAI_MODEL_BUDGET: resolveModel(process.env.OPENAI_MODEL_BUDGET, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: 'gpt-4o-mini',
+    cost: 'gpt-4o-mini',
+  }),
+  OPENAI_MODEL_INSIGHT: resolveModel(process.env.OPENAI_MODEL_INSIGHT, OPENAI_MODE, {
+    quality: OPENAI_MODEL_DEFAULT,
+    balanced: OPENAI_MODEL_DEFAULT,
+    cost: 'gpt-4o-mini',
+  }),
 
   OPEN_EXCHANGE_RATES_APP_ID: process.env.OPEN_EXCHANGE_RATES_APP_ID as string,
 

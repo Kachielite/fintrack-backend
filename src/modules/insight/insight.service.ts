@@ -122,7 +122,7 @@ class InsightService implements IInsightService {
       };
 
       const response = await this.openai.chat.completions.create({
-        model: CONSTANTS.OPENAI_MODEL,
+        model: CONSTANTS.OPENAI_MODEL_INSIGHT,
         messages: [
           {
             role: 'system',
@@ -142,7 +142,7 @@ class InsightService implements IInsightService {
           promptTokens: response.usage.prompt_tokens,
           completionTokens: response.usage.completion_tokens,
           totalTokens: response.usage.total_tokens,
-          modelUsed: CONSTANTS.OPENAI_MODEL,
+          modelUsed: CONSTANTS.OPENAI_MODEL_INSIGHT,
           userId: userId,
         }).catch(() => null);
       }

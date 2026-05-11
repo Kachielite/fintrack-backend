@@ -51,6 +51,11 @@ export interface ParsedTransaction {
   reference?: string;
 }
 
+export interface TemplateParseResult {
+  templateId: number;
+  parsed: ParsedTransaction;
+}
+
 export interface AuditResult {
   passed: boolean;
   notes: string;
