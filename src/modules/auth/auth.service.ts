@@ -34,14 +34,14 @@ class AuthService implements IAuthService {
     @inject('IAuthRepository') private authRepository: IAuthRepository,
     @inject('IUserRepository') private userRepository: IUserRepository,
   ) {
-    this.googleClient = new OAuth2Client(CONSTANTS.GOOGLE_CLIENT_ID);
+    this.googleClient = new OAuth2Client();
   }
 
   async googleAuth(data: GoogleAuthDTO): Promise<AuthResponseDTO> {
     try {
       const ticket = await this.googleClient.verifyIdToken({
         idToken: data.id_token,
-        audience: CONSTANTS.GOOGLE_CLIENT_ID,
+        audience: [CONSTANTS.GOOGLE_CLIENT_ID, CONSTANTS.GOOGLE_WEB_CLIENT_ID].filter(Boolean),
       });
       const payload = ticket.getPayload();
       if (!payload?.sub || !payload.email) {

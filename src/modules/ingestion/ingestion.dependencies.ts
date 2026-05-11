@@ -6,3 +6,4 @@ export async function registerIngestionDependencies(): Promise<void> {
   container.registerSingleton('IIngestionRepository', IngestionRepositoryImpl);
   container.registerSingleton<IngestionService>(IngestionService);
 }
+

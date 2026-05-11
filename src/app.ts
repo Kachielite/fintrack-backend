@@ -1,8 +1,8 @@
 import 'reflect-metadata';
-import express, { Express } from 'express';
+import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { inject, injectable } from 'tsyringe';
+import { container, inject, injectable } from 'tsyringe';
 import { APP_TOKENS } from '@/common/constants/app.tokens';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { applyMounts } from '@/common/utils/route-registry';
@@ -14,6 +14,10 @@ import {
 } from '@/middleware/global-exception.middleware';
 import { rateLimiter, probeBlocker } from '@/middleware/traffic-filter.middleware';
 import logger from '@/common/lib/logger';
+import syncEventBus from '@/common/lib/sync-event-bus';
+import { IEmailConnectionRepository } from '@/modules/email-connection/email-connection.repository';
+import IngestionService, { IIngestionService } from '@/modules/ingestion/ingestion.service';
+import { IAuthenticatedRequest } from '@/common/types/interface';
 
 @injectable()
 class App {
@@ -31,6 +35,7 @@ class App {
   }
 
   private initiateMiddleware(): void {
+    this.app.set('trust proxy', 1);
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(helmet());
@@ -41,7 +46,113 @@ class App {
   }
 
   private initiateRoutes(): void {
+    this.initiateOAuthCallbackRoute();
+    this.initiateSyncSSERoute();
     applyMounts(this.app);
+  }
+
+  private initiateOAuthCallbackRoute(): void {
+    const APP_DEEP_LINK = 'fintrack://oauth/gmail';
+
+    this.app.get('/api/email-connections/google/callback', async (req: Request, res: Response) => {
+      const { code, state, error } = req.query;
+
+      if (error || !code || !state) {
+        res.redirect(`${APP_DEEP_LINK}?error=${encodeURIComponent(String(error ?? 'oauth_failed'))}`);
+        return;
+      }
+
+      try {
+        const decoded = JSON.parse(Buffer.from(state as string, 'base64url').toString());
+        const userId = Number(decoded.userId);
+        if (!userId) throw new Error('Invalid state');
+
+        const EmailConnectionServiceClass = require('@/modules/email-connection/email-connection.service').default;
+        const emailConnectionService = container.resolve<{ handleCallback(userId: number, data: { code: string; redirect_uri: string }): Promise<{ id: number }> }>(EmailConnectionServiceClass);
+
+        const connection = await emailConnectionService.handleCallback(userId, {
+          code: code as string,
+          redirect_uri: CONSTANTS.GOOGLE_REDIRECT_URI,
+        });
+
+        res.redirect(`${APP_DEEP_LINK}?connection_id=${connection.id}`);
+      } catch (err) {
+        logger.error(`Gmail OAuth server callback failed - ${err}`);
+        res.redirect(`${APP_DEEP_LINK}?error=callback_failed`);
+      }
+    });
+  }
+
+  private initiateSyncSSERoute(): void {
+    this.app.get('/api/email-connections/:id/sync-stream', async (req: Request, res: Response) => {
+      const userId = (req as unknown as IAuthenticatedRequest).user?.id;
+      if (!userId) {
+        res.status(401).json({ message: 'Unauthorized' });
+        return;
+      }
+
+      const connectionId = parseInt(req.params.id as string, 10);
+      if (isNaN(connectionId)) {
+        res.status(400).json({ message: 'Invalid connection id' });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // disable nginx proxy buffering
+      res.flushHeaders();
+
+      const sendEvent = (event: string, data: unknown) => {
+        try {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          // client already disconnected
+        }
+      };
+
+      sendEvent('connected', {});
+
+      const channel = `sync:${connectionId}`;
+      const busHandler = (payload: { event: string; data: unknown }) => {
+        sendEvent(payload.event, payload.data);
+        if (payload.event === 'done' || payload.event === 'error') {
+          cleanup();
+          res.end();
+        }
+      };
+
+      const cleanup = () => syncEventBus.off(channel, busHandler);
+      syncEventBus.on(channel, busHandler);
+      req.on('close', cleanup);
+
+      try {
+        const connectionRepo = container.resolve<IEmailConnectionRepository>(
+          'IEmailConnectionRepository',
+        );
+        const connection = await connectionRepo.findById(connectionId, userId);
+
+        if (!connection || !connection.gmailLabelId) {
+          sendEvent('error', { message: 'No connection or Gmail label configured' });
+          cleanup();
+          res.end();
+          return;
+        }
+
+        const ingestionService = container.resolve<IIngestionService>(IngestionService);
+        ingestionService.pollConnection(connectionId, 'manual').catch((err) => {
+          logger.error(`SSE sync failed for connection ${connectionId} - ${err}`);
+          sendEvent('error', { message: 'Sync failed' });
+          cleanup();
+          res.end();
+        });
+      } catch (err) {
+        logger.error(`SSE setup failed for connection ${connectionId} - ${err}`);
+        sendEvent('error', { message: 'Failed to start sync' });
+        cleanup();
+        res.end();
+      }
+    });
   }
 
   private initiateErrorHandler(): void {

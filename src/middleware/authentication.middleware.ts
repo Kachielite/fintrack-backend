@@ -5,6 +5,11 @@ import { CONSTANTS } from '@/common/configuration/constants';
 import { UnAuthorizedException } from '@/common/exception';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
+// Paths that are always public even if they fall under an auth prefix
+const authExclusions: Array<{ path: string; method: string }> = [
+  { path: '/api/email-connections/google/callback', method: 'GET' },
+];
+
 const authPrefixes = [
   '/api/users',
   '/api/email-connections',
@@ -15,11 +20,17 @@ const authPrefixes = [
   '/api/goals',
   '/api/insights',
   '/api/parser-rules',
+  '/api/notifications',
 ];
 
 @injectable()
 class AuthenticationMiddleware {
   authenticate = (req: Request, res: Response, next: NextFunction): void => {
+    const isExcluded = authExclusions.some(
+      (e) => req.path === e.path && req.method === e.method,
+    );
+    if (isExcluded) return next();
+
     const requiresAuth = authPrefixes.some((prefix) => req.path.startsWith(prefix));
     if (!requiresAuth) return next();
 

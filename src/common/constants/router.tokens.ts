@@ -10,4 +10,5 @@ export const ROUTER_TOKENS = {
   GOAL: Symbol.for('GoalRouter'),
   INSIGHT: Symbol.for('InsightRouter'),
   ADMIN: Symbol.for('AdminRouter'),
+  NOTIFICATION: Symbol.for('NotificationRouter'),
 };

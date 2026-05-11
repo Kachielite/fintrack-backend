@@ -9,6 +9,7 @@ export const CONSTANTS = {
   JWT_REFRESH_EXPIRES_IN: '30d',
 
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID as string,
+  GOOGLE_WEB_CLIENT_ID: process.env.WEB_CLIENT_ID as string,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET as string,
   GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI as string,
 

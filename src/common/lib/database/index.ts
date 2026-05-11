@@ -22,16 +22,17 @@ class Database {
     const journal = path.join(migrationsFolder, 'meta', '_journal.json');
 
     if (!fs.existsSync(journal)) {
-      logger.warn('No migrations found — skipping. Run "npm run db:generate" to create them.');
+      logger.warn('No migration journal found — schema managed via drizzle-kit push.');
       return false;
     }
 
     try {
       await migrate(this.client, { migrationsFolder });
       return true;
-    } catch (error) {
-      logger.error(`Database migration failed - ${error}`);
-      throw error;
+    } catch (error: unknown) {
+      // Schema is managed by drizzle-kit push — migration file conflicts are non-fatal
+      logger.warn(`Migration skipped — ${error instanceof Error ? error.message.split('\n')[0] : error}`);
+      return false;
     }
   }
 

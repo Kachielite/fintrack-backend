@@ -39,13 +39,18 @@ class EmailConnectionService implements IEmailConnectionService {
     private connectionRepository: IEmailConnectionRepository,
   ) {}
 
-  getAuthUrl(_userId: number): string {
+  getAuthUrl(userId: number): string {
+    logger.info(`[Gmail OAuth] GOOGLE_REDIRECT_URI = "${CONSTANTS.GOOGLE_REDIRECT_URI}"`);
     const oauth2Client = this.createOAuth2Client();
-    return oauth2Client.generateAuthUrl({
+    const state = Buffer.from(JSON.stringify({ userId })).toString('base64url');
+    const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: GMAIL_SCOPES,
       prompt: 'consent',
+      state,
     });
+    logger.info(`[Gmail OAuth] Generated auth URL redirect_uri param = "${new URL(url).searchParams.get('redirect_uri')}"`);
+    return url;
   }
 
   async handleCallback(userId: number, data: GmailCallbackDTO): Promise<EmailConnectionResponseDTO> {
@@ -150,7 +155,18 @@ class EmailConnectionService implements IEmailConnectionService {
     try {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
-      return { success: true, message: 'Sync triggered', data: null };
+
+      // Fire and forget — resolve ingestionService lazily to avoid circular dep at module load
+      setImmediate(() => {
+        const { container } = require('tsyringe');
+        const IngestionService = require('@/modules/ingestion/ingestion.service').default;
+        const ingestionService = container.resolve(IngestionService);
+        ingestionService.pollConnection(id, 'manual').catch((err: unknown) => {
+          logger.error(`Background manual sync failed for connection ${id} - ${err}`);
+        });
+      });
+
+      return { success: true, message: 'Sync started', data: null };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error triggering sync for connection ${id} - ${error}`);
@@ -205,7 +221,7 @@ class EmailConnectionService implements IEmailConnectionService {
 
   private createOAuth2Client(redirectUri?: string) {
     return new google.auth.OAuth2(
-      CONSTANTS.GOOGLE_CLIENT_ID,
+      CONSTANTS.GOOGLE_WEB_CLIENT_ID,
       CONSTANTS.GOOGLE_CLIENT_SECRET,
       redirectUri || CONSTANTS.GOOGLE_REDIRECT_URI,
     );

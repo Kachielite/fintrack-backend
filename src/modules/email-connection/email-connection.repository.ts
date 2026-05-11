@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { EmailConnectionSchema } from './email-connection.schema';
 import {
@@ -11,6 +11,7 @@ import {
 export interface IEmailConnectionRepository {
   create(data: ICreateEmailConnection): Promise<IEmailConnection>;
   findById(id: number, userId: number): Promise<IEmailConnection | null>;
+  findByIdOnly(id: number): Promise<IEmailConnection | null>;
   findAllByUser(userId: number): Promise<IEmailConnection[]>;
   findAllActive(): Promise<IEmailConnection[]>;
   updateLabel(id: number, userId: number, data: IUpdateLabel): Promise<IEmailConnection>;
@@ -45,6 +46,15 @@ class EmailConnectionRepositoryImpl implements IEmailConnectionRepository {
     return (rows[0] as IEmailConnection) ?? null;
   }
 
+  async findByIdOnly(id: number): Promise<IEmailConnection | null> {
+    const rows = await this.db.client
+      .select()
+      .from(EmailConnectionSchema)
+      .where(eq(EmailConnectionSchema.id, id))
+      .limit(1);
+    return (rows[0] as IEmailConnection) ?? null;
+  }
+
   async findAllByUser(userId: number): Promise<IEmailConnection[]> {
     return (await this.db.client
       .select()
@@ -56,7 +66,12 @@ class EmailConnectionRepositoryImpl implements IEmailConnectionRepository {
     return (await this.db.client
       .select()
       .from(EmailConnectionSchema)
-      .where(eq(EmailConnectionSchema.status, 'active'))) as IEmailConnection[];
+      .where(
+        and(
+          eq(EmailConnectionSchema.status, 'active'),
+          isNotNull(EmailConnectionSchema.gmailLabelId),
+        ),
+      )) as IEmailConnection[];
   }
 
   async updateLabel(id: number, userId: number, data: IUpdateLabel): Promise<IEmailConnection> {
