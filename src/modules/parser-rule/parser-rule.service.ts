@@ -14,6 +14,12 @@ import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 
+export interface IdentifiedBank {
+  name: string;
+  shortCode: string;
+  country: string;
+}
+
 export interface IParserRuleService {
   listProductionTemplates(): Promise<ParserTemplateResponseDTO[]>;
   getTemplate(id: number): Promise<IParserTemplateWithRules>;
@@ -24,11 +30,21 @@ export interface IParserRuleService {
     emailBody: string,
     emailSubject: string,
   ): Promise<ParsedTransaction | null>;
+  extractTransaction(
+    bankName: string,
+    emailBody: string,
+    emailSubject: string,
+  ): Promise<ParsedTransaction | null>;
   generateTemplate(
     bankId: number,
     emailBody: string,
     emailSubject: string,
   ): Promise<IParserTemplate>;
+  identifyBank(
+    senderEmail: string,
+    emailSubject: string,
+    emailBody: string,
+  ): Promise<IdentifiedBank | null>;
   recordMatch(templateId: number): Promise<void>;
   recordFailure(templateId: number): Promise<void>;
 }
@@ -79,12 +95,12 @@ class ParserRuleService implements IParserRuleService {
       }));
 
       const response = await this.openai.chat.completions.create({
-        model: CONSTANTS.OPENAI_MODEL,
+        model: CONSTANTS.OPENAI_MODEL_AUDIT,
         messages: [
           {
             role: 'system',
             content:
-              'You are an expert in regex patterns for financial email parsing. Return JSON only.',
+              'You are an expert in JavaScript regex patterns for financial email parsing. Return JSON only.',
           },
           {
             role: 'user',
@@ -166,23 +182,30 @@ Return JSON only in this exact format:
       if (templates.length === 0) return null;
 
       for (const template of templates) {
-        if (
-          template.emailSubjectPattern &&
-          !new RegExp(template.emailSubjectPattern, 'i').test(emailSubject)
-        ) {
-          continue;
+        if (template.emailSubjectPattern) {
+          try {
+            if (!new RegExp(template.emailSubjectPattern, 'i').test(emailSubject)) continue;
+          } catch {
+            continue;
+          }
         }
 
         const result: ParsedTransaction = {};
         let allMatched = true;
 
         for (const rule of template.rules) {
-          const regex = new RegExp(rule.pattern, rule.flags);
-          const match = regex.exec(emailBody);
-          if (match && match[rule.extractGroup]) {
-            const value = match[rule.extractGroup].trim();
-            (result as any)[rule.field] = this.parseFieldValue(rule.field as RuleFieldEnum, value);
-          } else {
+          try {
+            const { pattern, flags } = this.sanitizePattern(rule.pattern, rule.flags);
+            const regex = new RegExp(pattern, flags);
+            const match = regex.exec(emailBody);
+            if (match && match[rule.extractGroup]) {
+              const value = match[rule.extractGroup].trim();
+              (result as any)[rule.field] = this.parseFieldValue(rule.field as RuleFieldEnum, value);
+            } else {
+              allMatched = false;
+            }
+          } catch (ruleErr) {
+            logger.warn(`Skipping bad regex rule ${rule.id} for bank ${bankId}: ${ruleErr}`);
             allMatched = false;
           }
         }
@@ -198,6 +221,71 @@ Return JSON only in this exact format:
     }
   }
 
+  async extractTransaction(
+    bankName: string,
+    emailBody: string,
+    emailSubject: string,
+  ): Promise<ParsedTransaction | null> {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_EXTRACTION,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a financial data extractor. Extract transaction details from bank notification emails. Return JSON only.',
+          },
+          {
+            role: 'user',
+            content: `Bank: ${bankName}
+Subject: ${emailSubject}
+Body:
+${emailBody.substring(0, 2000)}
+
+Extract the transaction details and return JSON:
+{
+  "is_transaction": true,
+  "amount": <positive number, no symbols or commas>,
+  "currency": "<ISO 4217 code, e.g. NGN, USD, GBP>",
+  "merchant": "<merchant or recipient name, or null>",
+  "transaction_type": "debit" or "credit",
+  "balance": <account balance number if present, else null>,
+  "reference": "<transaction ref if present, else null>"
+}
+
+If this is not a transaction notification, return { "is_transaction": false }.
+Only include fields that are clearly present in the email.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'extract_transaction',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL_EXTRACTION,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      if (!raw.is_transaction) return null;
+
+      const result: ParsedTransaction = {};
+      if (raw.amount != null) result.amount = Number(raw.amount);
+      if (raw.currency) result.currency = raw.currency;
+      if (raw.merchant) result.merchant = raw.merchant;
+      if (raw.transaction_type) result.transactionType = raw.transaction_type;
+      if (raw.balance != null) result.balance = Number(raw.balance);
+      if (raw.reference) result.reference = raw.reference;
+      return result;
+    } catch (error) {
+      logger.error(`Error extracting transaction for bank ${bankName} - ${error}`);
+      return null;
+    }
+  }
+
   async generateTemplate(
     bankId: number,
     emailBody: string,
@@ -205,34 +293,43 @@ Return JSON only in this exact format:
   ): Promise<IParserTemplate> {
     try {
       const response = await this.openai.chat.completions.create({
-        model: CONSTANTS.OPENAI_MODEL,
+        model: CONSTANTS.OPENAI_MODEL_TEMPLATE,
         messages: [
           {
             role: 'system',
             content:
-              'You are an expert at extracting financial data from bank notification emails. Return JSON only.',
+              'You are an expert at writing JavaScript regex patterns for parsing bank notification emails. Return JSON only.',
           },
           {
             role: 'user',
-            content: `Analyze this bank email and create regex patterns to extract transaction data.
+            content: `Analyze this bank email and create JavaScript regex patterns to extract transaction data.
 
 Subject: ${emailSubject}
-Body: ${emailBody}
+Body:
+${emailBody.substring(0, 3000)}
 
-Return a JSON object with regex patterns for the fields present in this email.
-Fields to look for: amount, currency, merchant, transaction_type (debit/credit), date, balance, reference
+IMPORTANT: Use JavaScript regex syntax only.
+- Do NOT use inline flags like (?i), (?m) — these are not supported in JavaScript.
+- Put flags in the "flags" field instead (e.g. "flags": "i" for case-insensitive).
+- Each pattern must have exactly one capture group for the value to extract.
 
-Format:
+Fields to extract (only include fields actually present in the email):
+- amount: the transaction amount as a number string (e.g. "5,000.00")
+- currency: the currency code or symbol (e.g. "NGN", "₦")
+- merchant: merchant or recipient name
+- transaction_type: "debit" or "credit"
+- balance: account balance after transaction
+- reference: transaction reference number
+
+Return JSON:
 {
   "description": "short description of this email format",
-  "subject_pattern": "optional regex to match this email subject",
+  "subject_pattern": "optional regex to match this email subject (no inline flags)",
   "fields": {
-    "amount": { "pattern": "regex string with capture group", "flags": "i" },
-    "currency": { "pattern": "regex string", "flags": "i" }
+    "amount": { "pattern": "regex with one capture group", "flags": "i" },
+    "currency": { "pattern": "regex with one capture group", "flags": "i" }
   }
-}
-
-Return JSON only. Only include fields actually present in the email.`,
+}`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -244,7 +341,7 @@ Return JSON only. Only include fields actually present in the email.`,
           promptTokens: response.usage.prompt_tokens,
           completionTokens: response.usage.completion_tokens,
           totalTokens: response.usage.total_tokens,
-          modelUsed: CONSTANTS.OPENAI_MODEL,
+          modelUsed: CONSTANTS.OPENAI_MODEL_TEMPLATE,
         }).catch(() => null);
       }
 
@@ -275,6 +372,55 @@ Return JSON only. Only include fields actually present in the email.`,
     }
   }
 
+  async identifyBank(
+    senderEmail: string,
+    emailSubject: string,
+    emailBody: string,
+  ): Promise<IdentifiedBank | null> {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_CLASSIFY,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are classifying whether an email is a bank transaction notification. Return JSON only.',
+          },
+          {
+            role: 'user',
+            content: `Sender: ${senderEmail}
+Subject: ${emailSubject}
+Body (first 600 chars): ${emailBody.substring(0, 600)}
+
+Is this a bank transaction notification email? If yes, identify the bank.
+Return: { "is_bank": true, "bank_name": "Full Name", "short_code": "lowercase_id", "country": "ISO2" }
+If not a bank email, return: { "is_bank": false }
+
+short_code: lowercase alphanumeric slug (e.g. "gtbank", "access", "zenith").
+country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'identify_bank',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      if (!raw.is_bank) return null;
+      return { name: raw.bank_name, shortCode: raw.short_code, country: raw.country };
+    } catch (error) {
+      logger.error(`Error identifying bank from email ${senderEmail} - ${error}`);
+      return null;
+    }
+  }
+
   async recordMatch(templateId: number): Promise<void> {
     try {
       const template = await this.repository.findTemplateById(templateId);
@@ -301,6 +447,18 @@ Return JSON only. Only include fields actually present in the email.`,
     } catch (error) {
       logger.error(`Error recording failure for template ${templateId} - ${error}`);
     }
+  }
+
+  private sanitizePattern(pattern: string, flags: string): { pattern: string; flags: string } {
+    // Strip Python-style inline flags like (?i), (?m), (?s) — not valid in JS
+    const inlineMatch = pattern.match(/^\(\?([a-z]+)\)/i);
+    if (inlineMatch) {
+      pattern = pattern.slice(inlineMatch[0].length);
+      for (const flag of inlineMatch[1]) {
+        if ('gimsuy'.includes(flag) && !flags.includes(flag)) flags += flag;
+      }
+    }
+    return { pattern, flags };
   }
 
   private parseFieldValue(field: RuleFieldEnum, value: string): string | number {

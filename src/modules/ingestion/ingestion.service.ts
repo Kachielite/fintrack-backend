@@ -31,7 +31,7 @@ export interface IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
 }
 
 @injectable()
@@ -131,8 +131,8 @@ class IngestionService implements IIngestionService {
           const subject = subjectHeader?.value || '';
           const body = this.extractEmailBody(msgResp.data.payload);
 
-          await this.processMessage(connectionId, msg.id, body, subject, from);
-          processedCount++;
+          const wasTransaction = await this.processMessage(connectionId, msg.id, body, subject, from);
+          if (wasTransaction) processedCount++;
         } catch (err) {
           logger.error(
             `Error processing message ${msg.id} for connection ${connectionId} - ${err}`,
@@ -197,25 +197,47 @@ class IngestionService implements IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessed(
         connectionId,
         messageId,
       );
-      if (alreadyProcessed) return;
+      if (alreadyProcessed) return false;
 
       const senderEmail = this.extractEmail(fromAddress);
-      const bank = await this.bankRepository.findBySenderEmail(senderEmail);
+      let bank = await this.bankRepository.findBySenderEmail(senderEmail);
 
       if (!bank) {
-        logger.info(`No bank match for sender ${senderEmail}, messageId=${messageId}`);
-        await this.ingestionRepository.markProcessed({
-          emailConnectionId: connectionId,
-          gmailMessageId: messageId,
-          outcome: 'non_transaction',
+        if (!this.looksLikeTransaction(emailBody, emailSubject)) {
+          logger.info(`Non-transactional email from unknown sender ${senderEmail}, messageId=${messageId}`);
+          await this.ingestionRepository.markProcessed({
+            emailConnectionId: connectionId,
+            gmailMessageId: messageId,
+            outcome: 'non_transaction',
+          });
+          return false;
+        }
+
+        logger.info(`Unknown sender ${senderEmail} — asking AI to identify bank, messageId=${messageId}`);
+        const identified = await this.parserRuleService.identifyBank(senderEmail, emailSubject, emailBody);
+        if (!identified) {
+          logger.info(`AI: not a bank email from ${senderEmail}, messageId=${messageId}`);
+          await this.ingestionRepository.markProcessed({
+            emailConnectionId: connectionId,
+            gmailMessageId: messageId,
+            outcome: 'non_transaction',
+          });
+          return false;
+        }
+
+        logger.info(`AI identified bank "${identified.name}" from ${senderEmail} — registering`);
+        bank = await this.bankRepository.upsertByShortCode({
+          name: identified.name,
+          shortCode: identified.shortCode,
+          country: identified.country,
+          senderEmail,
         });
-        return;
       }
 
       if (!this.looksLikeTransaction(emailBody, emailSubject)) {
@@ -225,15 +247,15 @@ class IngestionService implements IIngestionService {
           gmailMessageId: messageId,
           outcome: 'non_transaction',
         });
-        return;
+        return false;
       }
 
       const connection = await this.connectionRepository.findByIdOnly(connectionId);
       const userId = connection?.userId;
-      if (!userId) return;
+      if (!userId) return false;
 
       const user = await this.userRepository.findById(userId);
-      if (!user) return;
+      if (!user) return false;
 
       const regexResult = await this.parserRuleService.applyTemplate(
         bank.id,
@@ -242,7 +264,6 @@ class IngestionService implements IIngestionService {
       );
 
       if (regexResult && Object.keys(regexResult).length > 0) {
-        const confidence = CONSTANTS.REGEX_PRODUCTION_THRESHOLD;
         const refAmount = regexResult.amount
           ? await this.exchangeRateService.convert(
               Math.abs(regexResult.amount as number),
@@ -282,52 +303,55 @@ class IngestionService implements IIngestionService {
           outcome: 'parsed',
           transactionId: transaction.id,
         });
-        return;
+        return true;
       }
 
-      const template = await this.parserRuleService.generateTemplate(
-        bank.id,
-        emailBody,
-        emailSubject,
-      );
-      const aiResult = await this.parserRuleService.applyTemplate(
-        bank.id,
+      // No production regex template yet — extract directly with AI
+      const extracted = await this.parserRuleService.extractTransaction(
+        bank.name,
         emailBody,
         emailSubject,
       );
 
-      const refAmount = aiResult?.amount
+      if (!extracted) {
+        logger.info(`AI extraction returned non-transaction for ${bank.name}, messageId=${messageId}`);
+        await this.ingestionRepository.markProcessed({
+          emailConnectionId: connectionId,
+          gmailMessageId: messageId,
+          outcome: 'non_transaction',
+        });
+        return false;
+      }
+
+      const extractedCurrency = (extracted.currency as string) || user.refCurrency;
+      const refAmount = extracted.amount
         ? await this.exchangeRateService.convert(
-            Math.abs(aiResult.amount as number),
-            (aiResult.currency as string) || user.refCurrency,
+            Math.abs(extracted.amount as number),
+            extractedCurrency,
             user.refCurrency,
           )
         : 0;
 
-      const exchangeRate = await this.exchangeRateService.getRate(
-        (aiResult?.currency as string) || user.refCurrency,
-        user.refCurrency,
-      );
+      const exchangeRate = await this.exchangeRateService.getRate(extractedCurrency, user.refCurrency);
 
       const transaction = await this.transactionRepository.create({
         userId,
         emailConnectionId: connectionId,
         bankId: bank.id,
-        parserTemplateId: template.id,
         gmailMessageId: messageId,
-        merchant: (aiResult?.merchant as string) || 'Unknown',
+        merchant: (extracted.merchant as string) || 'Unknown',
         category: CategoryEnum.OTHER,
         transactionType:
-          (aiResult?.transactionType as TransactionTypeEnum) || TransactionTypeEnum.DEBIT,
-        amount: (aiResult?.amount as number) || 0,
-        currency: (aiResult?.currency as string) || user.refCurrency,
+          (extracted.transactionType as TransactionTypeEnum) || TransactionTypeEnum.DEBIT,
+        amount: (extracted.amount as number) || 0,
+        currency: extractedCurrency,
         refAmount,
         refCurrency: user.refCurrency,
         exchangeRateUsed: exchangeRate,
         transactionDate: new Date(),
         status: TransactionStatusEnum.UNVERIFIED,
-        reference: aiResult?.reference as string | undefined,
-        balance: aiResult?.balance as number | undefined,
+        reference: extracted.reference as string | undefined,
+        balance: extracted.balance as number | undefined,
       });
 
       await this.ingestionRepository.markProcessed({
@@ -337,11 +361,15 @@ class IngestionService implements IIngestionService {
         transactionId: transaction.id,
       });
 
+      // Build regex template in background so future emails use fast regex path
       setImmediate(() => {
-        this.parserRuleService.auditTemplate(template.id).catch((err) => {
-          logger.error(`Async audit failed for template ${template.id} - ${err}`);
-        });
+        this.parserRuleService
+          .generateTemplate(bank.id, emailBody, emailSubject)
+          .then((template) => this.parserRuleService.auditTemplate(template.id))
+          .catch((err) => logger.error(`Background template generation failed for bank ${bank.id} - ${err}`));
       });
+
+      return true;
     } catch (error) {
       logger.error(`Error processing message ${messageId} - ${error}`);
       await this.ingestionRepository.markProcessed({
@@ -349,6 +377,7 @@ class IngestionService implements IIngestionService {
         gmailMessageId: messageId,
         outcome: 'failed',
       });
+      return false;
     }
   }
 
@@ -365,22 +394,40 @@ class IngestionService implements IIngestionService {
 
   private extractEmailBody(payload: any): string {
     if (!payload) return '';
-    if (payload.body?.data) {
+    // Try text/plain first (recursively through nested multipart)
+    const plain = this.findMimePart(payload, 'text/plain');
+    if (plain) return plain;
+    // Fall back to HTML, stripped to readable text
+    const html = this.findMimePart(payload, 'text/html');
+    if (html) return this.stripHtml(html);
+    return '';
+  }
+
+  private findMimePart(payload: any, mimeType: string): string {
+    if (!payload) return '';
+    if (payload.mimeType === mimeType && payload.body?.data) {
       return Buffer.from(payload.body.data, 'base64').toString('utf8');
     }
     if (payload.parts) {
       for (const part of payload.parts) {
-        if (part.mimeType === 'text/plain' && part.body?.data) {
-          return Buffer.from(part.body.data, 'base64').toString('utf8');
-        }
-      }
-      for (const part of payload.parts) {
-        if (part.mimeType === 'text/html' && part.body?.data) {
-          return Buffer.from(part.body.data, 'base64').toString('utf8');
-        }
+        const result = this.findMimePart(part, mimeType);
+        if (result) return result;
       }
     }
     return '';
+  }
+
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 }
 

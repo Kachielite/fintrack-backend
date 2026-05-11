@@ -20,6 +20,11 @@ export const CONSTANTS = {
 
   OPENAI_API_KEY: process.env.OPENAI_API_KEY as string,
   OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
+  // Per-operation model overrides
+  OPENAI_MODEL_EXTRACTION: process.env.OPENAI_MODEL_EXTRACTION || 'gpt-4o-mini',
+  OPENAI_MODEL_TEMPLATE: process.env.OPENAI_MODEL_TEMPLATE || 'gpt-4o',
+  OPENAI_MODEL_AUDIT: process.env.OPENAI_MODEL_AUDIT || 'gpt-4o',
+  OPENAI_MODEL_CLASSIFY: process.env.OPENAI_MODEL_CLASSIFY || 'gpt-4o-mini',
 
   OPEN_EXCHANGE_RATES_APP_ID: process.env.OPEN_EXCHANGE_RATES_APP_ID as string,
 
