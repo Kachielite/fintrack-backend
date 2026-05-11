@@ -126,11 +126,28 @@ class InsightService implements IInsightService {
         messages: [
           {
             role: 'system',
-            content: `You are Iris, a warm and non-judgmental personal financial advisor. You observe patterns in a user's spending data and surface one to three insights that are specific, actionable, and forward-looking. You never shame. You always frame observations as opportunities. The user's goal is ${user.goalType} and their preferred tone is ${user.advisorTone}. You will receive top_merchants (actual merchant names like Glovo, Netflix, Apple, etc.) — use these to infer what the user is actually spending on, even if the category is listed as "other". Name specific merchants in your insights when relevant. Return a JSON array of insight objects: [{ type, message, context_data }]. Message must be 1–2 sentences. Return JSON only.`,
+            content: `You are Iris, a warm and non-judgmental personal financial advisor. You observe patterns in a user's spending data and surface one to three insights that are specific, actionable, and forward-looking. You never shame. You always frame observations as opportunities.
+
+The user's goal is ${user.goalType} and their preferred tone is ${user.advisorTone}.
+
+Use top_merchants (real merchant names like Glovo, Netflix, Cloudflare, etc.) to name specific merchants in insights even when the category is "other".
+
+Return a JSON object: { "insights": [ ...array of insight objects... ] }
+
+Each insight object must have:
+- "type": one of spending_pattern | budget_warning | goal_progress | fx_impact | subscription_alert | positive_reinforcement
+- "message": SHORT teaser shown on the home card. 1 punchy sentence, max 15 words. e.g. "Your weekend food spend is 3× your weekday average."
+- "title": Headline shown in the detail sheet. Direct and specific. e.g. "Your weekends are 3× your weekdays."
+- "body": 1–2 sentences of supporting detail for the sheet. e.g. "Average daily food spend this month. Saturdays and Sundays stand out clearly."
+- "action_text": Specific, quantified recommendation. e.g. "Cutting weekend food spend to weekday levels saves roughly ₦18,000 a week — ₦72,000 a month."
+- "chart_type": "bar_by_category" | "bar_by_merchant" | null
+- "chart_data": array of { "label": string, "value": number, "highlight": boolean } — 5–7 items, sorted descending by value. highlight=true for the notable ones. null if chart_type is null.
+
+Return JSON only.`,
           },
           {
             role: 'user',
-            content: `Generate financial insights for this user based on their data: ${JSON.stringify(context)}`,
+            content: `Generate financial insights for this user: ${JSON.stringify(context)}`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -148,8 +165,16 @@ class InsightService implements IInsightService {
       }
 
       const raw = JSON.parse(response.choices[0].message.content || '{"insights":[]}');
-      const insights: { type: string; message: string; context_data?: unknown }[] =
-        raw.insights || raw;
+      const insights: {
+        type: string;
+        message: string;
+        title?: string;
+        body?: string;
+        action_text?: string;
+        chart_type?: string | null;
+        chart_data?: { label: string; value: number; highlight: boolean }[] | null;
+        context_data?: unknown;
+      }[] = raw.insights || raw;
 
       const expiry = new Date();
       expiry.setDate(expiry.getDate() + 7);
@@ -173,7 +198,13 @@ class InsightService implements IInsightService {
           userId,
           type,
           message: insight.message,
-          contextData: insight.context_data,
+          contextData: {
+            title: insight.title ?? insight.message,
+            body: insight.body ?? null,
+            action_text: insight.action_text ?? null,
+            chart_type: insight.chart_type ?? null,
+            chart_data: insight.chart_data ?? null,
+          },
           expiresAt: expiry,
         });
       }
