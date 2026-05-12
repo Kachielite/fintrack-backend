@@ -16,16 +16,20 @@ async function runMigrations(): Promise<void> {
       console.log('  ✓ No pending migrations — schema is up to date.');
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (/permission denied/i.test(msg)) {
+    const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    const cause = (error as any)?.cause;
+    const causeMsg = cause instanceof Error ? cause.message : cause ? String(cause) : null;
+    const fullMsg = causeMsg ? `${msg} → ${causeMsg}` : msg;
+
+    if (/permission denied/i.test(fullMsg)) {
       console.error(
         `  ✗ Migration failed — missing schema permissions.\n` +
           `    Connect to your DB as a superuser and run:\n` +
-          `      GRANT ALL ON SCHEMA public TO <your_db_user>;\n` +
-          `    Original error: ${msg.split('\n')[0]}`,
+          `      GRANT CREATE ON SCHEMA public TO <your_db_user>;\n` +
+          `    Original error: ${fullMsg}`,
       );
     } else {
-      console.error(`  ✗ Migration failed — ${msg}`);
+      console.error(`  ✗ Migration failed — ${fullMsg}`);
     }
     failed = true;
   } finally {
