@@ -12,6 +12,7 @@ export interface IUser {
   payFrequency: string | null;
   onboardingComplete: boolean;
   refreshTokenHash: string | null;
+  demoPasswordHash: string | null;
   planTier: string;
   dataRetentionMonths: number;
   createdAt: Date;

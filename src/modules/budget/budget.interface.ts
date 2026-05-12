@@ -11,6 +11,7 @@ export interface IBudget {
   isActive: boolean;
   isSuggestedByAi: boolean;
   suppressedSuggestionsUntil: Date | null;
+  habitDescription: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -22,4 +23,5 @@ export interface ICreateBudget {
   currency: string;
   periodType: BudgetPeriodEnum;
   isSuggestedByAi?: boolean;
+  habitDescription?: string | null;
 }

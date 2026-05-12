@@ -249,21 +249,45 @@ NON-TRANSACTION EMAILS — return { "is_transaction": false } immediately if the
 - An account statement summary (not a single transaction alert)
 - An unsubscribe confirmation or privacy notice
 
+IMPORTANT TRANSACTION SIGNALS — treat as transaction when present:
+- "Transaction Notification"
+- "Debit alert details" or "Credit transaction occurred"
+- Fields such as Amount, Current/Available Balance, Description, Transaction Reference, Value Date, Time of Transaction
+- Bank formats from Stanbic IBTC, GTBank GeNS, Access Bank and similar
+
 MERCHANT NAME RULES — clean up raw payment processor strings:
 - Strip prefixes: "PWL*", "WEB PYMT ", "PADDLE.NET* ", "PAYPAL *", "POS ", "ATM "
 - Strip location suffixes like " NAIROBI KE", " LAGOS NG", " LONDON GB", " ACCRA GH"
 - Strip account/tracking IDs: trailing patterns like "_ZUFPAN177702590" or " *XF82KQPW"
 - Examples: "PWL*GLOVO NAIROBI KE" → "Glovo"; "SPOTIFY_ZUFPAN177702590" → "Spotify"; "WEB PYMT PADDLE.NET* ENHANCV LONDON GB" → "Enhancv"
 
-CATEGORY CLASSIFICATION — pick the best fit:
-- food: Glovo, Uber Eats, Jumia Food, Bolt Food, Mr. Delivery, Takeaway, KFC, McDonald's, Domino's, Chicken Republic, Burger King, Chipotle, restaurants, cafes
-- subs: Netflix, Spotify, Apple, Google One, YouTube Premium, AccelerateTV, Showmax, DSTV, GOtv, Claude.ai, Anthropic, OpenAI, Midjourney, GitHub, Microsoft 365, Adobe, Dropbox, iCloud, Amazon Prime, Canva, Figma, Notion, Slack, Zoom
-- utility: Airtel, MTN, Glo, 9mobile, Safaricom, Vodacom, PHCN, AEDC, IKEDC, EKEDC, electricity, water, internet bill, broadband, DECO, KCCL, Cloudflare, DigitalOcean, AWS, GCP, Azure (hosting/infra counts as utility)
-- transit: Uber, Bolt, Taxify, Lyft, bus, train, LASMA, toll, fuel, petrol, parking, airline, flight
-- health: pharmacy, hospital, clinic, medical, dental, optician, gym, fitness
-- fun: cinema, concerts, sports betting, games, streaming (if not a sub), events
-- transfer: ONLY when the merchant/recipient appears to be an individual person's full name (e.g. "MADUMERE PAMELA", "GAFARI OLARINOYE AMINU") AND there are no business entity keywords (Ltd, Inc, Corp, PLC, Co., Bank, Store, Market, Shop)
-- other: anything that does not clearly match the above`,
+CATEGORY CLASSIFICATION — pick one:
+- peer_to_peer_transfer
+- business_payment
+- subscriptions
+- entertainment_leisure
+- mobile_internet
+- utilities
+- groceries
+- retail_ecommerce
+- dining_food_delivery
+- transport
+- fuel_auto
+- travel
+- bank_charges
+- currency_conversion
+- salary_wages
+- refunds_reimbursements
+- healthcare
+- education
+- charity_donations
+- cash_withdrawal
+- uncategorized
+
+Rules:
+- use salary_wages for salary/payroll/interest-style credit inflows from bank narration
+- use refunds_reimbursements for refund/reversal/cashback credits
+- use peer_to_peer_transfer only for person-to-person transfer narration`,
           },
           {
             role: 'user',
@@ -279,7 +303,7 @@ Return JSON:
   "currency": "<ISO 4217 code, e.g. NGN, USD, GBP, KES>",
   "merchant": "<clean merchant or recipient name>",
   "transaction_type": "debit" | "credit",
-  "category": "food" | "transit" | "utility" | "subs" | "transfer" | "fun" | "health" | "other",
+  "category": "peer_to_peer_transfer" | "business_payment" | "subscriptions" | "entertainment_leisure" | "mobile_internet" | "utilities" | "groceries" | "retail_ecommerce" | "dining_food_delivery" | "transport" | "fuel_auto" | "travel" | "bank_charges" | "currency_conversion" | "salary_wages" | "refunds_reimbursements" | "healthcare" | "education" | "charity_donations" | "cash_withdrawal" | "uncategorized",
   "transaction_date": "<date in YYYY-MM-DD format extracted from the email body, or null if not found>",
   "balance": <account balance number after transaction, or null>,
   "reference": "<transaction reference/ID if present, else null>"

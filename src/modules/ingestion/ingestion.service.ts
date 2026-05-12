@@ -21,7 +21,7 @@ const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
 const TRANSACTION_HINT_KEYWORDS = [
   'debit', 'credited', 'credit', 'withdraw', 'withdrawal', 'transfer', 'pos', 'purchase',
   'payment', 'transaction', 'trx', 'alert', 'spent', 'received', 'successful', 'reversal',
-  'balance',
+  'balance', 'transaction notification', 'debit alert details', 'value date', 'time of transaction',
 ];
 const NON_TRANSACTION_KEYWORDS = [
   'otp', 'one time password', 'promotional', 'marketing', 'e-statement', 'account statement',
@@ -30,32 +30,28 @@ const NON_TRANSACTION_KEYWORDS = [
   'how do you rate', 'unsubscribe', 'privacy policy',
 ];
 
-const CATEGORY_HINTS: Record<CategoryEnum, string[]> = {
-  [CategoryEnum.FOOD]: [
-    'glovo', 'uber eats', 'jumia food', 'bolt food', 'kfc', "mcdonald", 'domino', 'restaurant', 'cafe',
-  ],
-  [CategoryEnum.SUBSCRIPTIONS]: [
-    'netflix', 'spotify', 'youtube premium', 'google one', 'apple', 'openai', 'anthropic', 'midjourney',
-    'github', 'microsoft 365', 'adobe', 'dropbox', 'icloud', 'amazon prime', 'canva', 'figma', 'notion', 'slack', 'zoom',
-  ],
-  [CategoryEnum.UTILITY]: [
-    'airtel', 'mtn', 'glo', '9mobile', 'safaricom', 'vodacom', 'electricity', 'water', 'internet', 'broadband',
-    'cloudflare', 'digitalocean', 'aws', 'gcp', 'azure',
-  ],
-  [CategoryEnum.TRANSIT]: [
-    'uber', 'bolt', 'lyft', 'taxi', 'bus', 'train', 'toll', 'fuel', 'petrol', 'parking', 'airline', 'flight',
-  ],
-  [CategoryEnum.HEALTH]: [
-    'pharmacy', 'hospital', 'clinic', 'medical', 'dental', 'optician', 'gym', 'fitness',
-  ],
-  [CategoryEnum.ENTERTAINMENT]: [
-    'cinema', 'concert', 'sports betting', 'bet', 'gaming', 'event', 'showmax', 'dstv', 'gotv',
-  ],
-  [CategoryEnum.TRANSFER]: [
-    'transfer to', 'sent to', 'beneficiary',
-  ],
-  [CategoryEnum.OTHER]: [],
-};
+const CATEGORY_REGEX_RULES: Array<{ category: CategoryEnum; pattern: RegExp }> = [
+  { category: CategoryEnum.BUSINESS_PAYMENT, pattern: /(POS|WEB|PAYMENT|STORE|MERCHANT|SHOP|ONLINE)\s+[@A-Z0-9_-]+/i },
+  { category: CategoryEnum.SUBSCRIPTIONS, pattern: /(SPOTIFY|NETFLIX|APPLE|MICROSOFT|GOOGLE|YOUTUBE|DISNEY|SUBSCRIPTION|PLAN|PREMIUM|JETBRAINS|GITHUB)/i },
+  { category: CategoryEnum.ENTERTAINMENT_LEISURE, pattern: /(MOVIE|CINEMA|CLUB|TICKET|EVENT|GAME|PLAYSTATION|STEAM)/i },
+  { category: CategoryEnum.MOBILE_INTERNET, pattern: /(MTN|AIRTEL|GLO|9MOBILE|VODAFONE|SAFARICOM|TELKOM|RECHARGE|DATA|TOP\s?UP|BUNDLE)/i },
+  { category: CategoryEnum.UTILITIES, pattern: /(ELECTRIC|POWER|UTILITY|WATER|GAS|BILL|NEPA|KES|KPLC)/i },
+  { category: CategoryEnum.GROCERIES, pattern: /(SUPERMARKET|GROCERY|SHOPRITE|MARKET|DELIVERY|FOODCO|SUPERMART|GLOVO)/i },
+  { category: CategoryEnum.RETAIL_ECOMMERCE, pattern: /(JUMIA|AMAZON|ALIEXPRESS|SHEIN|EBAY|SHOP|STORE|BOUTIQUE|FASHION)/i },
+  { category: CategoryEnum.DINING_FOOD_DELIVERY, pattern: /(EAT|CAFE|FOOD|RESTAURANT|DELIVERY|UBER\s?EATS|JUMIA\s?FOOD|DOORDASH|GLOVO)/i },
+  { category: CategoryEnum.TRANSPORT, pattern: /(UBER|BOLT|TAXI|BUS|TRAIN|FARE|RIDE)/i },
+  { category: CategoryEnum.FUEL_AUTO, pattern: /(FILLING\s?STATION|FUEL|PETROL|OIL|AUTO|CAR|SERVICE|LUBRICANT|MECHANIC)/i },
+  { category: CategoryEnum.TRAVEL, pattern: /(FLIGHT|AIRWAYS|HOTEL|BOOKING|AGENCY|TRIP|VACATION|TRAVEL)/i },
+  { category: CategoryEnum.BANK_CHARGES, pattern: /(CHARGE|FEE|MAINTENANCE|ATM\s?FEE|VAT|BANK\s?FEE)/i },
+  { category: CategoryEnum.CURRENCY_CONVERSION, pattern: /(FX|FOREX|CONVERSION|USD|GBP|EUR|EXCHANGE)/i },
+  { category: CategoryEnum.SALARY_WAGES, pattern: /(SALARY|PAYROLL|WAGES|HRPAY|INCOME|PAYMENT\s?FROM|COMPENSATION|TAPPI)/i },
+  { category: CategoryEnum.REFUNDS_REIMBURSEMENTS, pattern: /(REFUND|REVERSAL|CASHBACK|REV|REIMBURSE)/i },
+  { category: CategoryEnum.HEALTHCARE, pattern: /(HOSPITAL|PHARMACY|MEDICAL|CLINIC|HEALTH|INSURANCE|NHIS)/i },
+  { category: CategoryEnum.EDUCATION, pattern: /(SCHOOL|TUITION|COURSE|EDU|ACADEMY|E-LEARNING|TRAINING|BOOK)/i },
+  { category: CategoryEnum.CHARITY_DONATIONS, pattern: /(CHURCH|MOSQUE|CHARITY|DONATION|TITHE|FOUNDATION|NGO)/i },
+  { category: CategoryEnum.CASH_WITHDRAWAL, pattern: /(ATM|CASH\s?WITHDRAWAL|BRANCH)/i },
+  { category: CategoryEnum.PEER_TO_PEER_TRANSFER, pattern: /(IFO|TRANSFER|P2P|SEND|TO|TRF\/\/FRM|BENEFICIARY|MOBILE\s?MONEY|PERSONAL\s?TRANSFER|PAYMENT\s?TO|[A-Z]{2,}\s+[A-Z]{2,}(\s+[A-Z]{2,})?|PAMELA|IRENE|JOEL|SHELLA)/i },
+];
 
 type TriggerSource = 'cron' | 'manual';
 const TEMPLATE_RETRY_COOLDOWN_MS = 2 * 60 * 1000;
@@ -63,6 +59,12 @@ const TEMPLATE_RETRY_COOLDOWN_MS = 2 * 60 * 1000;
 interface TransactionSignal {
   isTransaction: boolean;
   reason: string;
+}
+
+interface CategoryResolution {
+  category: CategoryEnum;
+  source: 'learned' | 'regex_rule' | 'extracted' | 'default_uncategorized';
+  matchedRule?: string;
 }
 
 export interface IIngestionService {
@@ -293,7 +295,7 @@ class IngestionService implements IIngestionService {
         });
       }
 
-      if (!transactionSignal.isTransaction) {
+      if (!transactionSignal.isTransaction && !bank) {
         logger.info(
           `Non-transactional email from ${senderEmail}, messageId=${messageId}, reason=${transactionSignal.reason}`,
         );
@@ -322,7 +324,18 @@ class IngestionService implements IIngestionService {
         const transactionDate = this.parseTransactionDate(regexResult.date);
         const merchant = (regexResult.merchant as string) || 'Unknown';
         const currency = (regexResult.currency as string) || user.refCurrency;
-        const category = this.resolveCategory(merchant, emailSubject, emailBody, regexResult.category as string | undefined);
+        const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
+          userId,
+          merchant,
+        );
+        const categoryResolution = this.resolveCategory(
+          merchant,
+          emailSubject,
+          emailBody,
+          regexResult.category as string | undefined,
+          learnedCategory,
+        );
+        const category = categoryResolution.category;
         const reference = regexResult.reference as string | undefined;
 
         const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
@@ -389,6 +402,9 @@ class IngestionService implements IIngestionService {
           outcome: 'parsed',
           transactionId: transaction.id,
         });
+        logger.info(
+          `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
+        );
         return true;
       }
 
@@ -399,7 +415,9 @@ class IngestionService implements IIngestionService {
         emailSubject,
       );
 
-      if (!extracted) {
+      const extractedOrFallback = extracted || this.extractStructuredFallback(emailBody, emailSubject);
+
+      if (!extractedOrFallback) {
         logger.info(`AI extraction returned non-transaction for ${bank.name}, messageId=${messageId}`);
         await this.ingestionRepository.markProcessed({
           emailConnectionId: connectionId,
@@ -409,19 +427,25 @@ class IngestionService implements IIngestionService {
         return false;
       }
 
-      const extractedCurrency = (extracted.currency as string) || user.refCurrency;
-      const normalizedType = this.normalizeTransactionType(extracted.transactionType);
-      const parsedAmount = Number(extracted.amount ?? 0);
+      const extractedCurrency = (extractedOrFallback.currency as string) || user.refCurrency;
+      const normalizedType = this.normalizeTransactionType(extractedOrFallback.transactionType);
+      const parsedAmount = Number(extractedOrFallback.amount ?? 0);
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-      const merchant = (extracted.merchant as string) || 'Unknown';
-      const extractedDate = this.parseTransactionDate(extracted.date);
-      const category = this.resolveCategory(
+      const merchant = (extractedOrFallback.merchant as string) || 'Unknown';
+      const extractedDate = this.parseTransactionDate(extractedOrFallback.date);
+      const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
+        userId,
+        merchant,
+      );
+      const categoryResolution = this.resolveCategory(
         merchant,
         emailSubject,
         emailBody,
-        extracted.category as string | undefined,
+        extractedOrFallback.category as string | undefined,
+        learnedCategory,
       );
-      const reference = extracted.reference as string | undefined;
+      const category = categoryResolution.category;
+      const reference = extractedOrFallback.reference as string | undefined;
 
       const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
         userId,
@@ -468,7 +492,7 @@ class IngestionService implements IIngestionService {
         transactionDate: extractedDate,
         status: TransactionStatusEnum.UNVERIFIED,
         reference,
-        balance: extracted.balance as number | undefined,
+        balance: extractedOrFallback.balance as number | undefined,
       });
 
       await this.ingestionRepository.markProcessed({
@@ -477,6 +501,9 @@ class IngestionService implements IIngestionService {
         outcome: 'parsed',
         transactionId: transaction.id,
       });
+      logger.info(
+        `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
+      );
 
       // Build regex template in background so future emails use fast regex path.
       this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject);
@@ -513,6 +540,54 @@ class IngestionService implements IIngestionService {
     return { isTransaction: false, reason: 'insufficient_transaction_signals' };
   }
 
+  private extractStructuredFallback(
+    body: string,
+    subject: string,
+  ): {
+    amount?: number;
+    currency?: string;
+    merchant?: string;
+    category?: string;
+    transactionType?: string;
+    date?: string;
+    balance?: number;
+    reference?: string;
+  } | null {
+    const combined = `${subject}\n${body}`;
+
+    const amountMatch = combined.match(/amount\s*[:\n ]\s*(?:([A-Z]{3})|[₦$£€])?\s*([\d,]+(?:\.\d{1,2})?)/i);
+    if (!amountMatch) return null;
+
+    const balanceMatch = combined.match(/(?:current|available)?\s*balance\s*[:\n ]\s*(?:([A-Z]{3})|[₦$£€])?\s*([\d,]+(?:\.\d{1,2})?)/i);
+    const referenceMatch = combined.match(/(?:transaction\s+reference|document\s+number|reference)\s*[:\n ]\s*([^\n]+)/i);
+    const descriptionMatch = combined.match(/description\s*[:\n ]\s*([^\n]+)/i);
+    const dateMatch = combined.match(/(?:transaction\s+date\s*&\s*time|value\s+date|time\s+of\s+transaction)\s*[:\n ]\s*([^\n]+)/i);
+
+    const typeMatch = combined.match(/\b(debit|credit)\b/i);
+    const parsedAmount = parseFloat((amountMatch[2] || '').replace(/,/g, ''));
+    if (!isFinite(parsedAmount)) return null;
+
+    return {
+      amount: parsedAmount,
+      currency: amountMatch[1] || balanceMatch?.[1] || undefined,
+      merchant: (descriptionMatch?.[1] || '').trim() || 'Unknown',
+      transactionType: (typeMatch?.[1] || '').toLowerCase() || TransactionTypeEnum.DEBIT,
+      date: this.normalizeDateString(dateMatch?.[1]),
+      balance: balanceMatch?.[2]
+        ? parseFloat(balanceMatch[2].replace(/,/g, ''))
+        : undefined,
+      reference: referenceMatch?.[1]?.trim() || undefined,
+    };
+  }
+
+  private normalizeDateString(input?: string): string | undefined {
+    if (!input) return undefined;
+    const cleaned = input.replace(/\./g, '').trim();
+    const parsed = new Date(cleaned);
+    if (isNaN(parsed.getTime())) return undefined;
+    return parsed.toISOString();
+  }
+
   private normalizeTransactionType(value: string | undefined): TransactionTypeEnum {
     const normalized = (value || '').toLowerCase();
     return normalized === TransactionTypeEnum.CREDIT
@@ -537,22 +612,40 @@ class IngestionService implements IIngestionService {
     subject: string,
     body: string,
     extractedCategory?: string,
-  ): CategoryEnum {
+    learnedCategory?: CategoryEnum | null,
+  ): CategoryResolution {
+    if (learnedCategory) {
+      return {
+        category: learnedCategory,
+        source: 'learned',
+      };
+    }
+
     const normalized = `${merchant} ${subject} ${body}`.toLowerCase();
-    for (const [category, hints] of Object.entries(CATEGORY_HINTS) as [CategoryEnum, string[]][]) {
-      if (hints.some((hint) => normalized.includes(hint))) {
-        return category;
+    for (const rule of CATEGORY_REGEX_RULES) {
+      if (rule.pattern.test(normalized)) {
+        return {
+          category: rule.category,
+          source: 'regex_rule',
+          matchedRule: rule.pattern.source,
+        };
       }
     }
 
     if (extractedCategory) {
       const maybeCategory = extractedCategory.toLowerCase();
       if (Object.values(CategoryEnum).includes(maybeCategory as CategoryEnum)) {
-        return maybeCategory as CategoryEnum;
+        return {
+          category: maybeCategory as CategoryEnum,
+          source: 'extracted',
+        };
       }
     }
 
-    return CategoryEnum.OTHER;
+    return {
+      category: CategoryEnum.UNCATEGORIZED,
+      source: 'default_uncategorized',
+    };
   }
 
   private extractEmail(from: string): string {

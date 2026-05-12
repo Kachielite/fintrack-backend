@@ -12,6 +12,7 @@ export const UserSchema = pgTable('users', {
   payFrequency: text('pay_frequency'),
   onboardingComplete: boolean('onboarding_complete').default(false).notNull(),
   refreshTokenHash: text('refresh_token_hash'),
+  demoPasswordHash: text('demo_password_hash'),
   planTier: text('plan_tier').default('free').notNull(),
   dataRetentionMonths: integer('data_retention_months').default(3).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

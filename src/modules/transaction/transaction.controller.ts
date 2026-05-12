@@ -16,6 +16,8 @@ import {
   ChartDataQueryDTO,
   CorrectTransactionDTO,
   TransactionQueryDTO,
+  BulkCategorySchema,
+  BulkCategoryDTO,
 } from './transaction.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -258,11 +260,24 @@ class TransactionController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
+  @Patch('/bulk-category', { validate: BulkCategorySchema })
+  async bulkCorrectCategory(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.service.bulkCorrectCategory(userId, req.body as BulkCategoryDTO);
+  }
+
   @Patch('/:id', { validate: CorrectTransactionSchema })
   async correctTransaction(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
     return await this.service.correctTransaction(id, userId, req.body as CorrectTransactionDTO);
+  }
+
+  @Get('/:id/similar')
+  async getSimilarTransactions(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    return await this.service.getSimilarTransactions(id, userId);
   }
 }
 

@@ -13,6 +13,7 @@ export const BudgetSchema = pgTable('budgets', {
   isActive: boolean('is_active').default(true).notNull(),
   isSuggestedByAi: boolean('is_suggested_by_ai').default(false).notNull(),
   suppressedSuggestionsUntil: timestamp('suppressed_suggestions_until'),
+  habitDescription: text('habit_description'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

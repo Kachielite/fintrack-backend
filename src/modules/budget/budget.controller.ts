@@ -86,6 +86,28 @@ class BudgetController extends BaseController {
 
   /**
    * @swagger
+   * /budgets/auto-generate:
+   *   post:
+   *     tags: [Budgets]
+   *     summary: Auto-create budgets from full spending history using AI habit analysis
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '200':
+   *         description: Created budgets and skipped categories
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/auto-generate')
+  async autoGenerateBudgets(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.service.autoGenerateBudgets(userId);
+  }
+
+  /**
+   * @swagger
    * /budgets/{id}/detail:
    *   get:
    *     tags: [Budgets]

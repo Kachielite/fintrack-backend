@@ -28,8 +28,14 @@ export const BudgetWithProgressSchema = z.object({
   percentage: z.number(),
   status: z.enum(['healthy', 'warning', 'over']),
   days_remaining: z.number(),
+  habit_description: z.string().nullable().optional(),
 });
 export type BudgetWithProgressDTO = z.infer<typeof BudgetWithProgressSchema>;
+
+export type AutoGenerateResultDTO = {
+  created: BudgetWithProgressDTO[];
+  skipped: string[];
+};
 
 export const BudgetDetailSchema = z.object({
   id: z.number(),
