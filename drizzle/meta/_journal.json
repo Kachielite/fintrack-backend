@@ -22,6 +22,20 @@
       "when": 1778652000000,
       "tag": "0002_category_taxonomy",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778750000000,
+      "tag": "0003_budget_habit_description",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778760000000,
+      "tag": "0004_demo_auth",
+      "breakpoints": true
     }
   ]
 }
