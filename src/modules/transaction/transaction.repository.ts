@@ -1,9 +1,9 @@
 import { inject, injectable } from 'tsyringe';
-import { and, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
+import { and, between, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
 import { ITransaction, ICreateTransaction, ITransactionFilter } from './transaction.interface';
-import { TransactionStatusEnum } from './transaction.enum';
+import { CategoryEnum, TransactionStatusEnum } from './transaction.enum';
 import { IPagination } from '@/common/types/interface';
 
 export interface ITransactionRepository {
@@ -24,6 +24,7 @@ export interface ITransactionRepository {
     merchant: string;
     transactionDate: Date;
   }): Promise<boolean>;
+  findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<CategoryEnum | null>;
 }
 
 @injectable()
@@ -175,10 +176,10 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     const conditions = [
       eq(TransactionSchema.userId, input.userId),
       eq(TransactionSchema.currency, input.currency),
-      sql`abs(${TransactionSchema.amount}) between ${input.amountAbs - 0.01} and ${input.amountAbs + 0.01}`,
+      between(sql`abs(${TransactionSchema.amount})`, input.amountAbs - 0.01, input.amountAbs + 0.01),
       gte(TransactionSchema.transactionDate, from),
       lte(TransactionSchema.transactionDate, to),
-      sql`lower(${TransactionSchema.merchant}) = ${normalizedMerchant}`,
+      ilike(TransactionSchema.merchant, normalizedMerchant),
     ];
 
     if (input.bankId) conditions.push(eq(TransactionSchema.bankId, input.bankId));
@@ -193,6 +194,34 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .limit(1);
 
     return rows.length > 0;
+  }
+
+  async findLearnedCategoryForMerchant(
+    userId: number,
+    merchant: string,
+  ): Promise<CategoryEnum | null> {
+    const normalizedMerchant = merchant.trim().toLowerCase();
+    if (!normalizedMerchant) return null;
+
+    const rows = await this.db.client
+      .select({ category: TransactionSchema.category })
+      .from(TransactionSchema)
+      .where(
+        and(
+          eq(TransactionSchema.userId, userId),
+          eq(TransactionSchema.status, TransactionStatusEnum.CORRECTED),
+          ilike(TransactionSchema.merchant, normalizedMerchant),
+          sql`${TransactionSchema.originalCategory} is distinct from ${TransactionSchema.category}`,
+        ),
+      )
+      .orderBy(sql`${TransactionSchema.updatedAt} desc`)
+      .limit(1);
+
+    const category = rows[0]?.category;
+    if (category && Object.values(CategoryEnum).includes(category as CategoryEnum)) {
+      return category as CategoryEnum;
+    }
+    return null;
   }
 }
 
