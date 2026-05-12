@@ -26,3 +26,8 @@ export const TransactionSummaryQuerySchema = z.object({
   year: z.coerce.number().optional(),
   month: z.coerce.number().min(1).max(12).optional(),
 });
+
+export const ChartDataQuerySchema = z.object({
+  period: z.enum(['1m', '3m', '6m']).default('1m'),
+});
+export type ChartDataQueryDTO = z.infer<typeof ChartDataQuerySchema>;

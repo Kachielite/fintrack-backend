@@ -12,6 +12,8 @@ import {
   CorrectTransactionSchema,
   TransactionQuerySchema,
   TransactionSummaryQuerySchema,
+  ChartDataQuerySchema,
+  ChartDataQueryDTO,
   CorrectTransactionDTO,
   TransactionQueryDTO,
 } from './transaction.dto';
@@ -164,6 +166,13 @@ class TransactionController extends BaseController {
   async getUnverified(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     return await this.service.getUnverified(userId);
+  }
+
+  @Get('/chart-data', { validate: { query: ChartDataQuerySchema } })
+  async getChartData(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const query = req.query as ChartDataQueryDTO;
+    return await this.service.getChartData(userId, query.period);
   }
 
   /**

@@ -13,3 +13,12 @@ export interface ICreateProcessedEmail {
   outcome: 'parsed' | 'non_transaction' | 'failed';
   transactionId?: number;
 }
+
+export interface IConnectionStats {
+  emailsScanned: number;
+  transactionsExtracted: number;
+  nonTransactions: number;
+  failed: number;
+  byRegex: number;
+  byAi: number;
+}

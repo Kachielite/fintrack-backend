@@ -274,6 +274,20 @@ class EmailConnectionController extends BaseController {
     return await this.service.triggerSync(id, userId);
   }
 
+  @Get('/:id/stats')
+  async getStats(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    return await this.service.getStats(id, userId);
+  }
+
+  @Delete('/:id/data')
+  async deleteConnectionData(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    return await this.service.deleteConnectionData(id, userId);
+  }
+
   /**
    * @swagger
    * /email-connections/{id}:

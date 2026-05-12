@@ -8,6 +8,8 @@ import {
 } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { IEmailConnectionRepository } from './email-connection.repository';
+import { IIngestionRepository } from '@/modules/ingestion/ingestion.repository';
+import { IConnectionStats } from '@/modules/ingestion/ingestion.interface';
 import {
   GmailCallbackDTO,
   SetLabelDTO,
@@ -28,6 +30,8 @@ export interface IEmailConnectionService {
   listLabels(id: number, userId: number): Promise<GmailLabelDTO[]>;
   setLabel(id: number, userId: number, data: SetLabelDTO): Promise<EmailConnectionResponseDTO>;
   triggerSync(id: number, userId: number): Promise<IGeneralResponse<null>>;
+  getStats(id: number, userId: number): Promise<IConnectionStats>;
+  deleteConnectionData(id: number, userId: number): Promise<IGeneralResponse<null>>;
   deleteConnection(id: number, userId: number): Promise<IGeneralResponse<null>>;
   getOAuth2Client(connection: IEmailConnection): Promise<any>;
 }
@@ -37,6 +41,8 @@ class EmailConnectionService implements IEmailConnectionService {
   constructor(
     @inject('IEmailConnectionRepository')
     private connectionRepository: IEmailConnectionRepository,
+    @inject('IIngestionRepository')
+    private ingestionRepository: IIngestionRepository,
   ) {}
 
   getAuthUrl(userId: number): string {
@@ -171,6 +177,31 @@ class EmailConnectionService implements IEmailConnectionService {
       if (error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error triggering sync for connection ${id} - ${error}`);
       throw new InternalServerException('Failed to trigger sync');
+    }
+  }
+
+  async getStats(id: number, userId: number): Promise<IConnectionStats> {
+    try {
+      const connection = await this.connectionRepository.findById(id, userId);
+      if (!connection) throw new ResourceNotFoundException('Email connection not found');
+      return await this.ingestionRepository.getConnectionStats(id);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error fetching stats for connection ${id} - ${error}`);
+      throw new InternalServerException('Failed to fetch connection stats');
+    }
+  }
+
+  async deleteConnectionData(id: number, userId: number): Promise<IGeneralResponse<null>> {
+    try {
+      const connection = await this.connectionRepository.findById(id, userId);
+      if (!connection) throw new ResourceNotFoundException('Email connection not found');
+      await this.ingestionRepository.deleteConnectionData(id);
+      return { success: true, message: 'Connection data deleted', data: null };
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error deleting data for connection ${id} - ${error}`);
+      throw new InternalServerException('Failed to delete connection data');
     }
   }
 
