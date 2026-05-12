@@ -8,5 +8,12 @@
       <jdbc-url>jdbc:postgresql://localhost:5432/fintrack</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
+    <data-source source="LOCAL" name="fintrack@209.38.247.53" uuid="dcba6867-f21a-4d18-845b-a23d9254b589">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://209.38.247.53:5432/fintrack</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
   </component>
 </project>
