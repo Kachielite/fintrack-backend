@@ -3,4 +3,3 @@ dist/
 logs/
 .env
 .env.production
-drizzle/meta/
