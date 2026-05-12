@@ -16,6 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
