@@ -22,8 +22,7 @@ class Database {
     const journal = path.join(migrationsFolder, 'meta', '_journal.json');
 
     if (!fs.existsSync(journal)) {
-      logger.warn('No migration journal found — schema managed via drizzle-kit push.');
-      return false;
+      throw new Error(`Migration journal not found at ${journal}. Ensure the drizzle/ folder is included in the Docker image.`);
     }
 
     // Ensure the connecting role has CREATE on the public schema.
@@ -40,20 +39,8 @@ class Database {
       );
     }
 
-    try {
-      await migrate(this.client, { migrationsFolder });
-      return true;
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
-      if (msg.includes('permission denied')) {
-        // Re-throw permission errors so the caller can surface them clearly
-        // instead of silently falling back to db:push (which will also fail).
-        throw error;
-      }
-      // Other errors (e.g. migration already applied) are non-fatal
-      logger.warn(`Migration skipped — ${msg}`);
-      return false;
-    }
+    await migrate(this.client, { migrationsFolder });
+    return true;
   }
 
   async close(): Promise<void> {
