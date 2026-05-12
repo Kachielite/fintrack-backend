@@ -87,9 +87,6 @@ jobs:
             GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
             GOOGLE_REDIRECT_URI=${{ secrets.GOOGLE_REDIRECT_URI }}
             APPLE_CLIENT_ID=${{ secrets.APPLE_CLIENT_ID }}
-            APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}
-            APPLE_KEY_ID=${{ secrets.APPLE_KEY_ID }}
-            APPLE_PRIVATE_KEY=${{ secrets.APPLE_PRIVATE_KEY }}
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
             OPENAI_MODEL=${{ secrets.OPENAI_MODEL }}
             OPENAI_MODE=${{ secrets.OPENAI_MODE }}
@@ -104,7 +101,6 @@ jobs:
             GMAIL_POLL_INTERVAL_MINUTES=${{ secrets.GMAIL_POLL_INTERVAL_MINUTES }}
             REGEX_PRODUCTION_THRESHOLD=${{ secrets.REGEX_PRODUCTION_THRESHOLD }}
             REGEX_REAUDIT_THRESHOLD=${{ secrets.REGEX_REAUDIT_THRESHOLD }}
-            FRONTEND_ORIGIN=${{ secrets.FRONTEND_ORIGIN }}
             GITHUB_REPOSITORY_LOWERCASENAME=${{ github.repository }}
             EOF
             sed -i "s|GITHUB_REPOSITORY_LOWERCASENAME=.*|GITHUB_REPOSITORY_LOWERCASENAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')|" .env
