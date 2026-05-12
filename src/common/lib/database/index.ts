@@ -26,12 +26,32 @@ class Database {
       return false;
     }
 
+    // Ensure the connecting role has CREATE on the public schema.
+    // Required by PostgreSQL 15+ which revoked this default privilege.
+    try {
+      await this.pool.query('GRANT ALL ON SCHEMA public TO CURRENT_USER;');
+      logger.info('Schema public permissions granted.');
+    } catch (grantError: unknown) {
+      logger.warn(
+        `Could not GRANT ALL ON SCHEMA public — proceeding anyway. ` +
+          `If migrations fail with "permission denied", ask your DBA to run: ` +
+          `GRANT ALL ON SCHEMA public TO <your_db_user>; ` +
+          `(${grantError instanceof Error ? grantError.message.split('\n')[0] : grantError})`,
+      );
+    }
+
     try {
       await migrate(this.client, { migrationsFolder });
       return true;
     } catch (error: unknown) {
-      // Schema is managed by drizzle-kit push — migration file conflicts are non-fatal
-      logger.warn(`Migration skipped — ${error instanceof Error ? error.message.split('\n')[0] : error}`);
+      const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
+      if (msg.includes('permission denied')) {
+        // Re-throw permission errors so the caller can surface them clearly
+        // instead of silently falling back to db:push (which will also fail).
+        throw error;
+      }
+      // Other errors (e.g. migration already applied) are non-fatal
+      logger.warn(`Migration skipped — ${msg}`);
       return false;
     }
   }

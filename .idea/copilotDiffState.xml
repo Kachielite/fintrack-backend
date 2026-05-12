@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CopilotDiffPersistence">
+    <option name="pendingDiffs">
+      <map>
+        <entry key="$PROJECT_DIR$/src/common/lib/database/migrate.ts">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/src/common/lib/database/migrate.ts" />
+              <option name="originalContent" value="import 'reflect-metadata';&#10;import dotenv from 'dotenv';&#10;import { execSync } from 'child_process';&#10;import Database from './index';&#10;import logger from '@/common/lib/logger';&#10;&#10;dotenv.config();&#10;&#10;async function runMigrations(): Promise&lt;void&gt; {&#10;  const db = new Database();&#10;&#10;  try {&#10;    const migrated = await db.migrate();&#10;    if (migrated) {&#10;      logger.info('Migrations applied successfully.');&#10;      return;&#10;    }&#10;&#10;    // Fallback to schema push when SQL migration step is skipped or partially applied.&#10;    logger.info('Applying schema with drizzle-kit push...');&#10;    execSync('npm run db:push', { stdio: 'inherit' });&#10;    logger.info('Schema push completed successfully.');&#10;  } catch (error) {&#10;    logger.error(`Migration command failed - ${error}`);&#10;    process.exitCode = 1;&#10;  } finally {&#10;    await db.close();&#10;  }&#10;}&#10;&#10;runMigrations();&#10;" />
+              <option name="updatedContent" value="import 'reflect-metadata';&#10;import dotenv from 'dotenv';&#10;import { execSync } from 'child_process';&#10;import Database from './index';&#10;import logger from '@/common/lib/logger';&#10;&#10;dotenv.config();&#10;&#10;async function runMigrations(): Promise&lt;void&gt; {&#10;  const db = new Database();&#10;&#10;  try {&#10;    const migrated = await db.migrate();&#10;    if (migrated) {&#10;      logger.info('Migrations applied successfully.');&#10;      return;&#10;    }&#10;&#10;    // Fallback to schema push when SQL migration step is skipped or partially applied.&#10;    logger.info('Applying schema with drizzle-kit push...');&#10;    execSync('npm run db:push', { stdio: 'inherit' });&#10;    logger.info('Schema push completed successfully.');&#10;  } catch (error) {&#10;    const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);&#10;    if (msg.includes('permission denied')) {&#10;      logger.error(&#10;        `Migration failed due to missing schema permissions.\n` +&#10;          `Fix: connect to your PostgreSQL database as a superuser and run:\n` +&#10;          `  GRANT ALL ON SCHEMA public TO &lt;your_db_user&gt;;\n` +&#10;          `  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO &lt;your_db_user&gt;;\n` +&#10;          `Original error: ${msg}`,&#10;      );&#10;    } else {&#10;      logger.error(`Migration command failed — ${msg}`);&#10;    }&#10;    process.exitCode = 1;&#10;  } finally {&#10;    await db.close();&#10;  }&#10;}&#10;&#10;runMigrations();&#10;" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>

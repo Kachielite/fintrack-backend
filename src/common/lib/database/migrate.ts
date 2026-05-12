@@ -21,7 +21,18 @@ async function runMigrations(): Promise<void> {
     execSync('npm run db:push', { stdio: 'inherit' });
     logger.info('Schema push completed successfully.');
   } catch (error) {
-    logger.error(`Migration command failed - ${error}`);
+    const msg = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    if (msg.includes('permission denied')) {
+      logger.error(
+        `Migration failed due to missing schema permissions.\n` +
+          `Fix: connect to your PostgreSQL database as a superuser and run:\n` +
+          `  GRANT ALL ON SCHEMA public TO <your_db_user>;\n` +
+          `  ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO <your_db_user>;\n` +
+          `Original error: ${msg}`,
+      );
+    } else {
+      logger.error(`Migration command failed — ${msg}`);
+    }
     process.exitCode = 1;
   } finally {
     await db.close();
