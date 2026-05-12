@@ -11,9 +11,11 @@ import {
   GoogleAuthSchema,
   AppleAuthSchema,
   RefreshTokenSchema,
+  DemoAuthSchema,
   GoogleAuthDTO,
   AppleAuthDTO,
   RefreshTokenDTO,
+  DemoAuthDTO,
 } from './auth.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -130,6 +132,11 @@ class AuthController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
+  @Post('/demo', { validate: DemoAuthSchema })
+  async demoAuth(req: Request) {
+    return await this.authService.demoAuth(req.body as DemoAuthDTO);
+  }
+
   @Post('/refresh', { validate: RefreshTokenSchema })
   async refresh(req: Request) {
     return await this.authService.refreshToken(req.body as RefreshTokenDTO);

@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, between, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
+import { and, between, count, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
 import { ITransaction, ICreateTransaction, ITransactionFilter } from './transaction.interface';
@@ -25,6 +25,8 @@ export interface ITransactionRepository {
     transactionDate: Date;
   }): Promise<boolean>;
   findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<CategoryEnum | null>;
+  findSimilarByMerchant(userId: number, merchant: string, excludeCategory: string, excludeId: number): Promise<ITransaction[]>;
+  bulkUpdateCategory(userId: number, ids: number[], category: CategoryEnum): Promise<number>;
 }
 
 @injectable()
@@ -194,6 +196,45 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .limit(1);
 
     return rows.length > 0;
+  }
+
+  async findSimilarByMerchant(
+    userId: number,
+    merchant: string,
+    excludeCategory: string,
+    excludeId: number,
+  ): Promise<ITransaction[]> {
+    const normalizedMerchant = merchant.trim().toLowerCase();
+    if (!normalizedMerchant) return [];
+
+    return (await this.db.client
+      .select()
+      .from(TransactionSchema)
+      .where(
+        and(
+          eq(TransactionSchema.userId, userId),
+          ilike(TransactionSchema.merchant, normalizedMerchant),
+          sql`${TransactionSchema.category} != ${excludeCategory}`,
+          sql`${TransactionSchema.id} != ${excludeId}`,
+        ),
+      )
+      .orderBy(sql`${TransactionSchema.transactionDate} desc`)
+      .limit(50)) as ITransaction[];
+  }
+
+  async bulkUpdateCategory(userId: number, ids: number[], category: CategoryEnum): Promise<number> {
+    if (ids.length === 0) return 0;
+    const result = await this.db.client
+      .update(TransactionSchema)
+      .set({ category, status: TransactionStatusEnum.CORRECTED, updatedAt: new Date() })
+      .where(
+        and(
+          eq(TransactionSchema.userId, userId),
+          inArray(TransactionSchema.id, ids),
+        ),
+      )
+      .returning({ id: TransactionSchema.id });
+    return result.length;
   }
 
   async findLearnedCategoryForMerchant(

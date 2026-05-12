@@ -11,6 +11,7 @@ import {
   UpdateBudgetDTO,
   BudgetWithProgressDTO,
   BudgetDetailDTO,
+  AutoGenerateResultDTO,
 } from './budget.dto';
 import { IGeneralResponse } from '@/common/types/interface';
 import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
@@ -29,6 +30,7 @@ export interface IBudgetService {
   deleteBudget(id: number, userId: number): Promise<IGeneralResponse<null>>;
   getBudgetDetail(id: number, userId: number): Promise<BudgetDetailDTO>;
   getBudgetSuggestions(userId: number): Promise<any[]>;
+  autoGenerateBudgets(userId: number): Promise<AutoGenerateResultDTO>;
 }
 
 @injectable()
@@ -244,6 +246,135 @@ class BudgetService implements IBudgetService {
     }
   }
 
+  async autoGenerateBudgets(userId: number): Promise<AutoGenerateResultDTO> {
+    try {
+      logger.info(`[Budget] Auto-generating budgets for user ${userId}`);
+      const user = await this.userRepository.findById(userId);
+      const retentionMonths = user?.dataRetentionMonths ?? 3;
+      const currency = user?.refCurrency ?? 'NGN';
+
+      const activeBudgets = await this.budgetRepository.findAllActive(userId);
+      const budgetedCategories = new Set(activeBudgets.map((b) => b.category));
+
+      const historyStart = new Date();
+      historyStart.setMonth(historyStart.getMonth() - retentionMonths);
+      const now = new Date();
+      const transactions = await this.transactionRepository.findForSummary(userId, historyStart, now);
+
+      // Group spending by category → month
+      const categoryMonthly = new Map<string, Map<string, number>>();
+      for (const t of transactions.filter((tx) => tx.amount < 0)) {
+        if (budgetedCategories.has(t.category)) continue;
+        if (t.category === 'uncategorized') continue;
+        const d = new Date(t.transactionDate);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!categoryMonthly.has(t.category)) categoryMonthly.set(t.category, new Map());
+        const months = categoryMonthly.get(t.category)!;
+        months.set(monthKey, (months.get(monthKey) ?? 0) + Math.abs(t.refAmount));
+      }
+
+      // Only categories with at least 2 months of data
+      const eligibleCategories = Array.from(categoryMonthly.entries())
+        .filter(([, months]) => months.size >= 2)
+        .map(([category, months]) => {
+          const sorted = Array.from(months.entries()).sort(([a], [b]) => a.localeCompare(b));
+          const totals = sorted.map(([, v]) => v);
+          const avg = totals.reduce((a, b) => a + b, 0) / totals.length;
+          const min = Math.min(...totals);
+          const max = Math.max(...totals);
+          const trend =
+            totals.length >= 2
+              ? totals[totals.length - 1] > totals[0]
+                ? 'increasing'
+                : 'decreasing'
+              : 'stable';
+          return {
+            category,
+            avg_monthly: Math.round(avg),
+            min_monthly: Math.round(min),
+            max_monthly: Math.round(max),
+            months_of_data: sorted.length,
+            trend,
+            monthly_breakdown: sorted.map(([month, total]) => ({ month, total: Math.round(total) })),
+          };
+        });
+
+      if (eligibleCategories.length === 0) {
+        return { created: [], skipped: [...budgetedCategories] };
+      }
+
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_BUDGET,
+        messages: [
+          {
+            role: 'system',
+            content: `You are Iris, a personal finance AI. Analyse spending history and automatically set monthly budget limits. Return JSON only.`,
+          },
+          {
+            role: 'user',
+            content: `Create monthly budget limits for a user based on their full spending history.
+
+User goal: "${user?.goalType ?? 'general savings'}"
+Advisor tone: "${user?.advisorTone ?? 'warm'}"
+Reference currency: ${currency}
+
+Category spending history (${retentionMonths} months of data):
+${JSON.stringify(eligibleCategories, null, 2)}
+
+For each category:
+- Set a suggested_limit that reflects their actual behaviour, nudged toward their goal
+- Write a 1-2 sentence habit_description explaining their pattern and why you chose this limit (use the currency symbol if relevant, e.g. ₦ for NGN)
+- Be specific about the range (e.g. "you typically spend ₦20k–₦35k") and the trend
+
+Return: {"budgets": [{"category": string, "suggested_limit": number, "habit_description": string}]}`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'budget_auto_generate',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL_BUDGET,
+          userId,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{"budgets":[]}');
+      const aiSuggestions: { category: string; suggested_limit: number; habit_description: string }[] =
+        raw.budgets || [];
+
+      // Create budgets for each AI suggestion (skip already-budgeted)
+      const created: BudgetWithProgressDTO[] = [];
+      for (const suggestion of aiSuggestions) {
+        if (budgetedCategories.has(suggestion.category)) continue;
+        try {
+          const budget = await this.budgetRepository.create({
+            userId,
+            category: suggestion.category as any,
+            limitAmount: suggestion.suggested_limit,
+            currency,
+            periodType: BudgetPeriodEnum.MONTHLY,
+            isSuggestedByAi: true,
+            habitDescription: suggestion.habit_description,
+          });
+          created.push(await this.attachProgress(budget, userId));
+        } catch (err) {
+          logger.warn(`[Budget] Skipping auto-create for ${suggestion.category}: ${err}`);
+        }
+      }
+
+      suggestionCache.delete(userId);
+      return { created, skipped: [...budgetedCategories] };
+    } catch (error) {
+      logger.error(`Error auto-generating budgets for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to auto-generate budgets');
+    }
+  }
+
   async getBudgetSuggestions(userId: number): Promise<any[]> {
     try {
       logger.info(`[Budget] Fetching AI budget suggestions for user ${userId}`);
@@ -391,6 +522,7 @@ Return a JSON object: { "suggestions": [{ "category": string, "suggested_limit":
       percentage,
       status,
       days_remaining: daysRemaining,
+      habit_description: budget.habitDescription ?? null,
     };
   }
 }

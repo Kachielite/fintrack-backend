@@ -1,6 +1,7 @@
 import { inject, injectable } from 'tsyringe';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import jwksClient from 'jwks-rsa';
 import { CONSTANTS } from '@/common/configuration/constants';
@@ -12,7 +13,7 @@ import {
 import logger from '@/common/lib/logger';
 import { IAuthRepository } from './auth.repository';
 import { IUserRepository } from '@/modules/user/user.repository';
-import { AuthResponseDTO, GoogleAuthDTO, AppleAuthDTO, RefreshTokenDTO } from './auth.dto';
+import { AuthResponseDTO, GoogleAuthDTO, AppleAuthDTO, RefreshTokenDTO, DemoAuthDTO } from './auth.dto';
 import { AuthProviderEnum } from './auth.enum';
 
 const appleJwksClient = jwksClient({
@@ -22,6 +23,7 @@ const appleJwksClient = jwksClient({
 export interface IAuthService {
   googleAuth(data: GoogleAuthDTO): Promise<AuthResponseDTO>;
   appleAuth(data: AppleAuthDTO): Promise<AuthResponseDTO>;
+  demoAuth(data: DemoAuthDTO): Promise<AuthResponseDTO>;
   refreshToken(data: RefreshTokenDTO): Promise<Pick<AuthResponseDTO, 'access_token'>>;
   logout(userId: number): Promise<void>;
 }
@@ -79,6 +81,41 @@ class AuthService implements IAuthService {
       if (error instanceof BadRequestException) throw error;
       logger.error(`Apple auth error - ${error}`);
       throw new InternalServerException('Apple authentication failed');
+    }
+  }
+
+  async demoAuth(data: DemoAuthDTO): Promise<AuthResponseDTO> {
+    try {
+      logger.info('[Auth] Demo auth attempt');
+      const user = await this.userRepository.findByEmail(data.email);
+      if (!user || !user.demoPasswordHash) {
+        throw new UnAuthorizedException('Invalid demo credentials');
+      }
+      const valid = await bcrypt.compare(data.password, user.demoPasswordHash);
+      if (!valid) {
+        throw new UnAuthorizedException('Invalid demo credentials');
+      }
+
+      logger.info(`[Auth] Demo login for user ${user.id}`);
+      const accessToken = this.issueAccessToken(user.id, user.email);
+      const refreshToken = this.issueRefreshToken(user.id);
+      const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      await this.userRepository.updateRefreshTokenHash(user.id, tokenHash);
+
+      return {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.firstName,
+          onboarding_complete: user.onboardingComplete,
+        },
+      };
+    } catch (error) {
+      if (error instanceof UnAuthorizedException) throw error;
+      logger.error(`Demo auth error - ${error}`);
+      throw new InternalServerException('Demo authentication failed');
     }
   }
 

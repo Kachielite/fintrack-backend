@@ -4,6 +4,7 @@ import { ITransaction } from './transaction.interface';
 import {
   CorrectTransactionDTO,
   TransactionQueryDTO,
+  BulkCategoryDTO,
 } from './transaction.dto';
 import { TransactionStatusEnum, CategoryEnum } from './transaction.enum';
 import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
@@ -27,6 +28,8 @@ export interface ITransactionService {
     userId: number,
     data: CorrectTransactionDTO,
   ): Promise<ITransaction>;
+  getSimilarTransactions(id: number, userId: number): Promise<ITransaction[]>;
+  bulkCorrectCategory(userId: number, data: BulkCategoryDTO): Promise<{ updated: number }>;
   getUnverified(userId: number): Promise<ITransaction[]>;
   pruneExpiredTransactions(): Promise<void>;
 }
@@ -321,6 +324,35 @@ class TransactionService implements ITransactionService {
       if (error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error correcting transaction ${id} - ${error}`);
       throw new InternalServerException('Failed to correct transaction');
+    }
+  }
+
+  async getSimilarTransactions(id: number, userId: number): Promise<ITransaction[]> {
+    try {
+      logger.info(`[Transaction] Fetching similar transactions for ${id} (user ${userId})`);
+      const transaction = await this.transactionRepository.findById(id, userId);
+      if (!transaction) throw new ResourceNotFoundException('Transaction not found');
+      return await this.transactionRepository.findSimilarByMerchant(
+        userId,
+        transaction.merchant,
+        transaction.category,
+        id,
+      );
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error fetching similar transactions for ${id} - ${error}`);
+      throw new InternalServerException('Failed to fetch similar transactions');
+    }
+  }
+
+  async bulkCorrectCategory(userId: number, data: BulkCategoryDTO): Promise<{ updated: number }> {
+    try {
+      logger.info(`[Transaction] Bulk correcting ${data.ids.length} transactions for user ${userId}`);
+      const updated = await this.transactionRepository.bulkUpdateCategory(userId, data.ids, data.category);
+      return { updated };
+    } catch (error) {
+      logger.error(`Error bulk correcting categories for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to bulk update categories');
     }
   }
 

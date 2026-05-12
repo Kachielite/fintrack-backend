@@ -26,6 +26,7 @@ class BudgetRepositoryImpl implements IBudgetRepository {
         currency: data.currency,
         periodType: data.periodType,
         isSuggestedByAi: data.isSuggestedByAi || false,
+        habitDescription: data.habitDescription ?? null,
       })
       .returning();
     return row as IBudget;

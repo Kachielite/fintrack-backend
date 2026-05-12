@@ -15,7 +15,8 @@
     "db:studio": "drizzle-kit studio",
     "seed:admin": "ts-node -r tsconfig-paths/register scripts/seed-admin.ts",
     "seed:banks": "ts-node -r tsconfig-paths/register scripts/seed-banks.ts",
-    "db:reset": "ts-node -r tsconfig-paths/register scripts/reset-db.ts && drizzle-kit push && ts-node -r tsconfig-paths/register scripts/seed-banks.ts && ts-node -r tsconfig-paths/register scripts/seed-admin.ts"
+    "db:reset": "ts-node -r tsconfig-paths/register scripts/reset-db.ts && drizzle-kit push && ts-node -r tsconfig-paths/register scripts/seed-banks.ts && ts-node -r tsconfig-paths/register scripts/seed-admin.ts",
+    "seed:demo": "ts-node -r tsconfig-paths/register scripts/seed-demo.ts"
   },
   "keywords": [],
   "author": "",

@@ -31,3 +31,9 @@ export const ChartDataQuerySchema = z.object({
   period: z.enum(['1m', '3m', '6m']).default('1m'),
 });
 export type ChartDataQueryDTO = z.infer<typeof ChartDataQuerySchema>;
+
+export const BulkCategorySchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1),
+  category: z.nativeEnum(CategoryEnum),
+});
+export type BulkCategoryDTO = z.infer<typeof BulkCategorySchema>;
