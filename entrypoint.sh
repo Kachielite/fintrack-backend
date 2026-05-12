@@ -23,8 +23,9 @@ echo "→ Running migrations"
 node dist/common/lib/database/migrate.js
 
 # Run TS seed script without type-checking in production containers.
+# Non-fatal: a seed failure must never prevent the server from starting.
 echo "→ Seeding demo account"
-TS_NODE_TRANSPILE_ONLY=1 npm run seed:demo
+TS_NODE_TRANSPILE_ONLY=1 npm run seed:demo || echo "  ⚠ Demo seed failed (non-fatal) — server will still start"
 
 echo "→ Starting Fintrack"
 exec node dist/index.js
