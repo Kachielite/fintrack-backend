@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CopilotDiffPersistence">
+    <option name="pendingDiffs">
+      <map>
+        <entry key="$PROJECT_DIR$/Dockerfile">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/Dockerfile" />
+              <option name="originalContent" value="# Stage 1: Build&#10;FROM node:20-slim AS builder&#10;WORKDIR /app&#10;ENV HUSKY=0&#10;COPY package.json package-lock.json ./&#10;RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund&#10;COPY . .&#10;RUN npm run build&#10;&#10;# Stage 2: Production&#10;FROM node:20-slim AS production&#10;WORKDIR /app&#10;ENV NODE_ENV=production&#10;ENV HUSKY=0&#10;COPY package.json package-lock.json ./&#10;RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund&#10;COPY --from=builder /app/dist ./dist&#10;COPY --from=builder /app/drizzle ./drizzle&#10;COPY entrypoint.sh ./entrypoint.sh&#10;RUN chmod +x entrypoint.sh&#10;EXPOSE 3000&#10;ENTRYPOINT [&quot;./entrypoint.sh&quot;]&#10;" />
+              <option name="updatedContent" value="# Stage 1: Build&#10;FROM node:20-slim AS builder&#10;WORKDIR /app&#10;ENV HUSKY=0&#10;COPY package.json package-lock.json ./&#10;RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund&#10;COPY . .&#10;RUN npm run build&#10;&#10;# Stage 2: Production&#10;FROM node:20-slim AS production&#10;WORKDIR /app&#10;ENV NODE_ENV=production&#10;ENV HUSKY=0&#10;COPY package.json package-lock.json ./&#10;RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund&#10;COPY --from=builder /app/dist ./dist&#10;COPY --from=builder /app/drizzle ./drizzle&#10;COPY --from=builder /app/scripts ./scripts&#10;COPY --from=builder /app/src ./src&#10;COPY --from=builder /app/tsconfig.json ./tsconfig.json&#10;COPY entrypoint.sh ./entrypoint.sh&#10;RUN chmod +x entrypoint.sh&#10;EXPOSE 3000&#10;ENTRYPOINT [&quot;./entrypoint.sh&quot;]" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+        <entry key="$PROJECT_DIR$/entrypoint.sh">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/entrypoint.sh" />
+              <option name="originalContent" value="#!/bin/sh&#10;set -e&#10;&#10;echo &quot;→ Running migrations&quot;&#10;node dist/common/lib/database/migrate.js&#10;&#10;echo &quot;→ Starting Fintrack&quot;&#10;exec node dist/index.js&#10;" />
+              <option name="updatedContent" value="#!/bin/sh&#10;set -e&#10;&#10;echo &quot;→ Running migrations&quot;&#10;node dist/common/lib/database/migrate.js&#10;&#10;echo &quot;→ Seeding demo account&quot;&#10;npm run seed:demo&#10;&#10;echo &quot;→ Starting Fintrack&quot;&#10;exec node dist/index.js" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
