@@ -322,7 +322,7 @@ class IngestionService implements IIngestionService {
         const parsedAmount = Number(regexResult.amount ?? 0);
         const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
         const transactionDate = this.parseTransactionDate(regexResult.date);
-        const merchant = (regexResult.merchant as string) || 'Unknown';
+        const merchant = this.sanitizeMerchant((regexResult.merchant as string) || 'Unknown');
         const currency = (regexResult.currency as string) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
           userId,
@@ -336,13 +336,14 @@ class IngestionService implements IIngestionService {
           learnedCategory,
         );
         const category = categoryResolution.category;
-        const reference = regexResult.reference as string | undefined;
+        const reference = this.sanitizeReference(regexResult.reference as string | undefined);
 
         const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
           userId,
           bankId: bank.id,
           currency,
           amountAbs: Math.abs(signedAmount),
+          transactionType: normalizedType,
           reference,
           merchant,
           transactionDate,
@@ -431,7 +432,7 @@ class IngestionService implements IIngestionService {
       const normalizedType = this.normalizeTransactionType(extractedOrFallback.transactionType);
       const parsedAmount = Number(extractedOrFallback.amount ?? 0);
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-      const merchant = (extractedOrFallback.merchant as string) || 'Unknown';
+      const merchant = this.sanitizeMerchant((extractedOrFallback.merchant as string) || 'Unknown');
       const extractedDate = this.parseTransactionDate(extractedOrFallback.date);
       const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
         userId,
@@ -445,13 +446,14 @@ class IngestionService implements IIngestionService {
         learnedCategory,
       );
       const category = categoryResolution.category;
-      const reference = extractedOrFallback.reference as string | undefined;
+      const reference = this.sanitizeReference(extractedOrFallback.reference as string | undefined);
 
       const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
         userId,
         bankId: bank.id,
         currency: extractedCurrency,
         amountAbs: Math.abs(signedAmount),
+        transactionType: normalizedType,
         reference,
         merchant,
         transactionDate: extractedDate,
@@ -559,9 +561,17 @@ class IngestionService implements IIngestionService {
     if (!amountMatch) return null;
 
     const balanceMatch = combined.match(/(?:current|available)?\s*balance\s*[:\n ]\s*(?:([A-Z]{3})|[₦$£€])?\s*([\d,]+(?:\.\d{1,2})?)/i);
-    const referenceMatch = combined.match(/(?:transaction\s+reference|document\s+number|reference)\s*[:\n ]\s*([^\n]+)/i);
-    const descriptionMatch = combined.match(/description\s*[:\n ]\s*([^\n]+)/i);
-    const dateMatch = combined.match(/(?:transaction\s+date\s*&\s*time|value\s+date|time\s+of\s+transaction)\s*[:\n ]\s*([^\n]+)/i);
+    const referenceRaw = this.extractFieldValue(combined, [
+      'transaction\\s+reference',
+      'document\\s+number',
+      'reference',
+    ]);
+    const descriptionRaw = this.extractFieldValue(combined, ['description']);
+    const dateRaw = this.extractFieldValue(combined, [
+      'transaction\\s+date\\s*&\\s*time',
+      'value\\s+date',
+      'time\\s+of\\s+transaction',
+    ]);
 
     const typeMatch = combined.match(/\b(debit|credit)\b/i);
     const parsedAmount = parseFloat((amountMatch[2] || '').replace(/,/g, ''));
@@ -570,14 +580,40 @@ class IngestionService implements IIngestionService {
     return {
       amount: parsedAmount,
       currency: amountMatch[1] || balanceMatch?.[1] || undefined,
-      merchant: (descriptionMatch?.[1] || '').trim() || 'Unknown',
+      merchant: this.sanitizeMerchant(descriptionRaw || ''),
       transactionType: (typeMatch?.[1] || '').toLowerCase() || TransactionTypeEnum.DEBIT,
-      date: this.normalizeDateString(dateMatch?.[1]),
+      date: this.normalizeDateString(dateRaw),
       balance: balanceMatch?.[2]
         ? parseFloat(balanceMatch[2].replace(/,/g, ''))
         : undefined,
-      reference: referenceMatch?.[1]?.trim() || undefined,
+      reference: this.sanitizeReference(referenceRaw),
     };
+  }
+
+  private extractFieldValue(input: string, labels: string[]): string | undefined {
+    const stop = [
+      'amount',
+      'current\\s+balance',
+      'available\\s+balance',
+      'description',
+      'transaction\\s+reference',
+      'document\\s+number',
+      'account\\s+number',
+      'transaction\\s+date',
+      'time\\s+of\\s+transaction',
+      'value\\s+date',
+      'your\\s+branch',
+      'how\\s+did\\s+you\\s+feel',
+      'this\\s+is\\s+an\\s+online\\s+auto\\s+generated',
+    ];
+    const labelAlternation = labels.join('|');
+    const stopAlternation = stop.join('|');
+    const regex = new RegExp(
+      `(?:${labelAlternation})\\s*[:\\n ]\\s*([\\s\\S]*?)(?=\\n\\s*(?:${stopAlternation})\\b|\\s+(?:${stopAlternation})\\b|$)`,
+      'i',
+    );
+    const match = input.match(regex);
+    return match?.[1]?.trim();
   }
 
   private normalizeDateString(input?: string): string | undefined {
@@ -586,6 +622,62 @@ class IngestionService implements IIngestionService {
     const parsed = new Date(cleaned);
     if (isNaN(parsed.getTime())) return undefined;
     return parsed.toISOString();
+  }
+
+  private sanitizeMerchant(value: string | undefined): string {
+    if (!value) return 'Unknown';
+    let text = value
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const stopPhrases = [
+      'Transaction Reference',
+      'Account Number',
+      'Transaction Date',
+      'Your Branch',
+      'How did you feel',
+      'This is an online auto generated',
+      'Please note that this transaction',
+    ];
+    for (const phrase of stopPhrases) {
+      const idx = text.toLowerCase().indexOf(phrase.toLowerCase());
+      if (idx >= 0) {
+        text = text.slice(0, idx).trim();
+      }
+    }
+
+    text = text
+      .replace(/^\d{12,}\s+/i, '')
+      .replace(/\bHEAD OFFICE BRANCH\b[\s\S]*$/i, '')
+      .replace(/[\-,:;]+$/g, '')
+      .trim();
+
+    if (!text) return 'Unknown';
+    return text.length > 120 ? text.slice(0, 120).trim() : text;
+  }
+
+  private sanitizeReference(value: string | undefined): string | undefined {
+    if (!value) return undefined;
+    let text = value
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const stopPhrases = [
+      'Account Number',
+      'Transaction Date',
+      'Your Branch',
+      'How did you feel',
+      'This is an online auto generated',
+    ];
+    for (const phrase of stopPhrases) {
+      const idx = text.toLowerCase().indexOf(phrase.toLowerCase());
+      if (idx >= 0) {
+        text = text.slice(0, idx).trim();
+      }
+    }
+
+    const canonicalRef = text.match(/[A-Z0-9][A-Z0-9/-]{4,}/i)?.[0];
+    return canonicalRef || undefined;
   }
 
   private normalizeTransactionType(value: string | undefined): TransactionTypeEnum {

@@ -20,6 +20,7 @@ export interface ITransactionRepository {
     bankId?: number;
     currency: string;
     amountAbs: number;
+    transactionType: string;
     reference?: string;
     merchant: string;
     transactionDate: Date;
@@ -168,26 +169,46 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     bankId?: number;
     currency: string;
     amountAbs: number;
+    transactionType: string;
     reference?: string;
     merchant: string;
     transactionDate: Date;
   }): Promise<boolean> {
-    const from = new Date(input.transactionDate.getTime() - 24 * 60 * 60 * 1000);
-    const to = new Date(input.transactionDate.getTime() + 24 * 60 * 60 * 1000);
-    const normalizedMerchant = input.merchant.trim().toLowerCase();
+    const normalizedReference = input.reference?.trim();
+
+    // Reference-based dedup is the strongest signal and should not depend on merchant parsing quality.
+    if (normalizedReference) {
+      const conditions = [
+        eq(TransactionSchema.userId, input.userId),
+        eq(TransactionSchema.currency, input.currency),
+        eq(TransactionSchema.reference, normalizedReference),
+        eq(TransactionSchema.transactionType, input.transactionType),
+        between(sql`abs(${TransactionSchema.amount})`, input.amountAbs - 0.01, input.amountAbs + 0.01),
+      ];
+      if (input.bankId) conditions.push(eq(TransactionSchema.bankId, input.bankId));
+
+      const rows = await this.db.client
+        .select({ id: TransactionSchema.id })
+        .from(TransactionSchema)
+        .where(and(...conditions))
+        .limit(1);
+
+      return rows.length > 0;
+    }
+
+    // For transactions with no reference, use a narrow time-series fingerprint to avoid duplicates.
+    const from = new Date(input.transactionDate.getTime() - 15 * 60 * 1000);
+    const to = new Date(input.transactionDate.getTime() + 15 * 60 * 1000);
     const conditions = [
       eq(TransactionSchema.userId, input.userId),
       eq(TransactionSchema.currency, input.currency),
+      eq(TransactionSchema.transactionType, input.transactionType),
       between(sql`abs(${TransactionSchema.amount})`, input.amountAbs - 0.01, input.amountAbs + 0.01),
       gte(TransactionSchema.transactionDate, from),
       lte(TransactionSchema.transactionDate, to),
-      ilike(TransactionSchema.merchant, normalizedMerchant),
     ];
 
     if (input.bankId) conditions.push(eq(TransactionSchema.bankId, input.bankId));
-    if (input.reference) {
-      conditions.push(eq(TransactionSchema.reference, input.reference));
-    }
 
     const rows = await this.db.client
       .select({ id: TransactionSchema.id })
