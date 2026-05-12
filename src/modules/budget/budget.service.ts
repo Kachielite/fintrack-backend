@@ -66,6 +66,8 @@ class BudgetService implements IBudgetService {
         currency: data.currency,
         periodType: data.period_type,
       });
+      // Bust suggestion cache so the accepted category is no longer suggested
+      suggestionCache.delete(userId);
       return this.attachProgress(budget, userId);
     } catch (error) {
       logger.error(`Error creating budget for user ${userId} - ${error}`);
@@ -252,52 +254,78 @@ class BudgetService implements IBudgetService {
 
       const user = await this.userRepository.findById(userId);
       const activeBudgets = await this.budgetRepository.findAllActive(userId);
-      const now = new Date();
-      const suppressedCategorySet = new Set(
-        activeBudgets
-          .filter((b) => b.suppressedSuggestionsUntil !== null && b.suppressedSuggestionsUntil > now)
-          .map((b) => b.category),
-      );
+
+      // Exclude all categories that already have an active budget
+      const budgetedCategorySet = new Set(activeBudgets.map((b) => b.category));
 
       const threeMonthsAgo = new Date();
       threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+      const now = new Date();
       const transactions = await this.transactionRepository.findForSummary(userId, threeMonthsAgo, now);
 
-      const categorySpend = new Map<string, number[]>();
+      // Group spending by category → month for true behavioral analysis
+      const categoryMonthly = new Map<string, Map<string, number>>();
       for (const t of transactions.filter((tx) => tx.amount < 0)) {
-        const monthly = categorySpend.get(t.category) || [];
-        monthly.push(Math.abs(t.refAmount));
-        categorySpend.set(t.category, monthly);
+        if (budgetedCategorySet.has(t.category)) continue;
+        const d = new Date(t.transactionDate);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!categoryMonthly.has(t.category)) categoryMonthly.set(t.category, new Map());
+        const months = categoryMonthly.get(t.category)!;
+        months.set(monthKey, (months.get(monthKey) ?? 0) + Math.abs(t.refAmount));
       }
 
-      const spendingContext = Array.from(categorySpend.entries())
-        .filter(([cat]) => !suppressedCategorySet.has(cat))
-        .map(([cat, amounts]) => ({
+      const spendingContext = Array.from(categoryMonthly.entries()).map(([cat, monthMap]) => {
+        const sorted = Array.from(monthMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+        const monthlyTotals = sorted.map(([, total]) => total);
+        const avgMonthly = monthlyTotals.reduce((a, b) => a + b, 0) / monthlyTotals.length;
+        const trend =
+          monthlyTotals.length >= 2
+            ? monthlyTotals[monthlyTotals.length - 1] > monthlyTotals[0]
+              ? 'increasing'
+              : 'decreasing'
+            : 'stable';
+        return {
           category: cat,
-          avg_monthly: amounts.reduce((a, b) => a + b, 0) / 3,
-          suggested_limit: (amounts.reduce((a, b) => a + b, 0) / 3) * 0.9,
-        }));
+          avg_monthly: Math.round(avgMonthly),
+          trend,
+          months: sorted.map(([month, total]) => ({ month, total: Math.round(total) })),
+        };
+      });
 
       if (spendingContext.length === 0) {
         return [];
       }
+
+      const existingBudgetsSummary = activeBudgets.map((b) => ({
+        category: b.category,
+        limit: b.limitAmount,
+      }));
 
       const response = await this.openai.chat.completions.create({
         model: CONSTANTS.OPENAI_MODEL_BUDGET,
         messages: [
           {
             role: 'system',
-            content: `You are Iris, a helpful financial advisor. Return JSON only.`,
+            content: `You are Iris, a smart financial advisor. Analyse spending behaviour over time and suggest realistic monthly budgets. Return JSON only.`,
           },
           {
             role: 'user',
-            content: `Generate budget suggestions for a user with goal "${user?.goalType}" and advisor tone "${user?.advisorTone}".
+            content: `Suggest monthly budget limits for a user.
 
-Spending data (last 3 months): ${JSON.stringify(spendingContext)}
+User goal: "${user?.goalType}"
+Advisor tone: "${user?.advisorTone}"
+${existingBudgetsSummary.length > 0 ? `Existing budgets (already set, do NOT suggest these): ${JSON.stringify(existingBudgetsSummary)}` : ''}
 
-For each category, write a 1-2 sentence suggestion explaining why this budget makes sense. Use the user's preferred tone.
+Spending behaviour over the last 3 months (grouped by month so you can see trends):
+${JSON.stringify(spendingContext, null, 2)}
 
-Return JSON array: [{ "category": string, "suggested_limit": number, "message": string }]`,
+For each category in the spending data:
+- Analyse the trend (increasing/decreasing/stable) and monthly breakdown
+- Suggest a limit that reflects the user's actual behaviour — not just the average, but adjusted for their goal
+- If spending is increasing, suggest a limit that nudges them to reduce it; if decreasing, reinforce the improvement
+- Write a 1-2 sentence explanation using the user's preferred tone
+
+Return a JSON object: { "suggestions": [{ "category": string, "suggested_limit": number, "message": string }] }`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -315,10 +343,13 @@ Return JSON array: [{ "category": string, "suggested_limit": number, "message": 
       }
 
       const raw = JSON.parse(response.choices[0].message.content || '{"suggestions":[]}');
-      const suggestions = raw.suggestions || raw;
+      const suggestions = (raw.suggestions || raw) as any[];
 
-      suggestionCache.set(userId, { data: suggestions, cachedAt: Date.now() });
-      return suggestions;
+      // Final safety filter: never suggest a category that already has a budget
+      const filtered = suggestions.filter((s: any) => !budgetedCategorySet.has(s.category));
+
+      suggestionCache.set(userId, { data: filtered, cachedAt: Date.now() });
+      return filtered;
     } catch (error) {
       logger.error(`Error generating budget suggestions for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to generate budget suggestions');
