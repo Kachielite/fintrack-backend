@@ -23,6 +23,18 @@ export interface ICreateEmailConnection {
   encryptedAccessToken: string;
   encryptedRefreshToken: string;
   tokenExpiresAt: Date;
+  gmailLabelId?: string;
+  gmailLabelName?: string;
+  status?: string;
+}
+
+export interface IUpdateEmailConnection {
+  encryptedAccessToken: string;
+  encryptedRefreshToken: string;
+  tokenExpiresAt: Date;
+  gmailLabelId: string;
+  gmailLabelName: string;
+  status: string;
 }
 
 export interface IUpdateLabel {

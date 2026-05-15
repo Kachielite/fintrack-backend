@@ -273,33 +273,31 @@ class BudgetService implements IBudgetService {
         months.set(monthKey, (months.get(monthKey) ?? 0) + Math.abs(t.refAmount));
       }
 
-      // Only categories with at least 2 months of data
-      const eligibleCategories = Array.from(categoryMonthly.entries())
-        .filter(([, months]) => months.size >= 2)
-        .map(([category, months]) => {
-          const sorted = Array.from(months.entries()).sort(([a], [b]) => a.localeCompare(b));
-          const totals = sorted.map(([, v]) => v);
-          const avg = totals.reduce((a, b) => a + b, 0) / totals.length;
-          const min = Math.min(...totals);
-          const max = Math.max(...totals);
-          const trend =
-            totals.length >= 2
-              ? totals[totals.length - 1] > totals[0]
-                ? 'increasing'
-                : 'decreasing'
-              : 'stable';
-          return {
-            category,
-            avg_monthly: Math.round(avg),
-            min_monthly: Math.round(min),
-            max_monthly: Math.round(max),
-            months_of_data: sorted.length,
-            trend,
-            monthly_breakdown: sorted.map(([month, total]) => ({ month, total: Math.round(total) })),
-          };
-        });
+      // Include every category with any spending — single-month data is a valid baseline
+      const spendingByCategory = Array.from(categoryMonthly.entries()).map(([category, months]) => {
+        const sorted = Array.from(months.entries()).sort(([a], [b]) => a.localeCompare(b));
+        const totals = sorted.map(([, v]) => v);
+        const avg = totals.reduce((a, b) => a + b, 0) / totals.length;
+        const min = Math.min(...totals);
+        const max = Math.max(...totals);
+        const trend =
+          totals.length >= 2
+            ? totals[totals.length - 1] > totals[0]
+              ? 'increasing'
+              : 'decreasing'
+            : 'stable';
+        return {
+          category,
+          avg_monthly: Math.round(avg),
+          min_monthly: Math.round(min),
+          max_monthly: Math.round(max),
+          months_of_data: sorted.length,
+          trend,
+          monthly_breakdown: sorted.map(([month, total]) => ({ month, total: Math.round(total) })),
+        };
+      });
 
-      if (eligibleCategories.length === 0) {
+      if (spendingByCategory.length === 0) {
         return { created: [], skipped: [...budgetedCategories] };
       }
 
@@ -318,13 +316,15 @@ User goal: "${user?.goalType ?? 'general savings'}"
 Advisor tone: "${user?.advisorTone ?? 'warm'}"
 Reference currency: ${currency}
 
-Category spending history (${retentionMonths} months of data):
-${JSON.stringify(eligibleCategories, null, 2)}
+Category spending history (up to ${retentionMonths} months of data per category):
+${JSON.stringify(spendingByCategory, null, 2)}
 
-For each category:
-- Set a suggested_limit that reflects their actual behaviour, nudged toward their goal
-- Write a 1-2 sentence habit_description explaining their pattern and why you chose this limit (use the currency symbol if relevant, e.g. ₦ for NGN)
-- Be specific about the range (e.g. "you typically spend ₦20k–₦35k") and the trend
+Rules:
+- Create a budget for EVERY category listed, regardless of how many months of data it has.
+- For categories with multiple months: set the suggested_limit close to the average, nudged toward the user's goal (e.g. slightly below avg if they want to save more, at avg if spending is already controlled).
+- For categories with only 1 month of data: use that month's total as the baseline estimate.
+- Do not invent limits — ground every limit in the actual numbers provided.
+- Write a 1-2 sentence habit_description explaining the pattern and why you chose this limit. Use the currency symbol (e.g. ₦ for NGN). Be specific about amounts and trends.
 
 Return: {"budgets": [{"category": string, "suggested_limit": number, "habit_description": string}]}`,
           },

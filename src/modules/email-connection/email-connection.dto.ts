@@ -6,12 +6,6 @@ export const GmailCallbackSchema = z.object({
 });
 export type GmailCallbackDTO = z.infer<typeof GmailCallbackSchema>;
 
-export const SetLabelSchema = z.object({
-  label_id: z.string().min(1),
-  label_name: z.string().min(1),
-});
-export type SetLabelDTO = z.infer<typeof SetLabelSchema>;
-
 export const EmailConnectionResponseSchema = z.object({
   id: z.number(),
   gmail_address: z.string(),
@@ -22,10 +16,3 @@ export const EmailConnectionResponseSchema = z.object({
   created_at: z.date(),
 });
 export type EmailConnectionResponseDTO = z.infer<typeof EmailConnectionResponseSchema>;
-
-export const GmailLabelSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  messages_total: z.number().optional(),
-});
-export type GmailLabelDTO = z.infer<typeof GmailLabelSchema>;
