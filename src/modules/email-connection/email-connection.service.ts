@@ -18,7 +18,10 @@ import { IEmailConnection } from './email-connection.interface';
 import { ConnectionStatusEnum } from './email-connection.enum';
 import { IGeneralResponse } from '@/common/types/interface';
 
-const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
+const GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.settings.basic',
+];
 
 const UNIVERSAL_FILTER_QUERY =
   'subject:(debit OR credit OR debited OR credited OR "transaction alert" OR ' +
