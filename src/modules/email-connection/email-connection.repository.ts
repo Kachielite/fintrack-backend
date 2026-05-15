@@ -5,6 +5,7 @@ import { EmailConnectionSchema } from './email-connection.schema';
 import {
   IEmailConnection,
   ICreateEmailConnection,
+  IUpdateEmailConnection,
   IUpdateLabel,
 } from './email-connection.interface';
 
@@ -12,8 +13,10 @@ export interface IEmailConnectionRepository {
   create(data: ICreateEmailConnection): Promise<IEmailConnection>;
   findById(id: number, userId: number): Promise<IEmailConnection | null>;
   findByIdOnly(id: number): Promise<IEmailConnection | null>;
+  findByUserAndEmail(userId: number, gmailAddress: string): Promise<IEmailConnection | null>;
   findAllByUser(userId: number): Promise<IEmailConnection[]>;
   findAllActive(): Promise<IEmailConnection[]>;
+  update(id: number, data: IUpdateEmailConnection): Promise<IEmailConnection>;
   updateLabel(id: number, userId: number, data: IUpdateLabel): Promise<IEmailConnection>;
   updateTokens(
     id: number,
@@ -55,6 +58,15 @@ class EmailConnectionRepositoryImpl implements IEmailConnectionRepository {
     return (rows[0] as IEmailConnection) ?? null;
   }
 
+  async findByUserAndEmail(userId: number, gmailAddress: string): Promise<IEmailConnection | null> {
+    const rows = await this.db.client
+      .select()
+      .from(EmailConnectionSchema)
+      .where(and(eq(EmailConnectionSchema.userId, userId), eq(EmailConnectionSchema.gmailAddress, gmailAddress)))
+      .limit(1);
+    return (rows[0] as IEmailConnection) ?? null;
+  }
+
   async findAllByUser(userId: number): Promise<IEmailConnection[]> {
     return (await this.db.client
       .select()
@@ -72,6 +84,23 @@ class EmailConnectionRepositoryImpl implements IEmailConnectionRepository {
           isNotNull(EmailConnectionSchema.gmailLabelId),
         ),
       )) as IEmailConnection[];
+  }
+
+  async update(id: number, data: IUpdateEmailConnection): Promise<IEmailConnection> {
+    const [row] = await this.db.client
+      .update(EmailConnectionSchema)
+      .set({
+        encryptedAccessToken: data.encryptedAccessToken,
+        encryptedRefreshToken: data.encryptedRefreshToken,
+        tokenExpiresAt: data.tokenExpiresAt,
+        gmailLabelId: data.gmailLabelId,
+        gmailLabelName: data.gmailLabelName,
+        status: data.status,
+        updatedAt: new Date(),
+      })
+      .where(eq(EmailConnectionSchema.id, id))
+      .returning();
+    return row as IEmailConnection;
   }
 
   async updateLabel(id: number, userId: number, data: IUpdateLabel): Promise<IEmailConnection> {

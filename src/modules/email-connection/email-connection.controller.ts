@@ -5,14 +5,13 @@ import {
   Controller,
   Delete,
   Get,
-  Patch,
   Post,
 } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import EmailConnectionService, {
   IEmailConnectionService,
 } from './email-connection.service';
-import { GmailCallbackSchema, SetLabelSchema, GmailCallbackDTO, SetLabelDTO } from './email-connection.dto';
+import { GmailCallbackSchema, GmailCallbackDTO } from './email-connection.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
 @injectable()
@@ -57,7 +56,8 @@ class EmailConnectionController extends BaseController {
    * /email-connections/google/callback:
    *   post:
    *     tags: [Email Connections]
-   *     summary: Handle Gmail OAuth callback and save connection
+   *     summary: Exchange OAuth code for tokens. Automatically creates the Bank Transactions label and filter in the user's Gmail. Triggers async backfill of existing matching emails.
+   *     description: Uses the gmail.modify scope to read emails, create labels, create filters, and apply labels to messages. Does not allow sending emails or permanent deletion.
    *     security:
    *       - bearerAuth: []
    *     requestBody:
@@ -76,7 +76,7 @@ class EmailConnectionController extends BaseController {
    *                 example: 'https://app.fintrack.io/callback'
    *     responses:
    *       '201':
-   *         description: Connection created
+   *         description: Connection created with Bank Transactions label and filter set up automatically
    *         content:
    *           application/json:
    *             schema:
@@ -154,90 +154,6 @@ class EmailConnectionController extends BaseController {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
     return await this.service.getConnection(id, userId);
-  }
-
-  /**
-   * @swagger
-   * /email-connections/{id}/labels:
-   *   get:
-   *     tags: [Email Connections]
-   *     summary: List Gmail labels for this connection (for label picker)
-   *     security:
-   *       - bearerAuth: []
-   *     parameters:
-   *       - in: path
-   *         name: id
-   *         required: true
-   *         schema:
-   *           type: integer
-   *           example: 1
-   *     responses:
-   *       '200':
-   *         description: List of Gmail labels
-   *         content:
-   *           application/json:
-   *             schema:
-   *               type: array
-   *               items:
-   *                 $ref: '#/components/schemas/GmailLabel'
-   *       '401':
-   *         $ref: '#/components/responses/Unauthorized'
-   *       '500':
-   *         $ref: '#/components/responses/InternalServerError'
-   */
-  @Get('/:id/labels')
-  async listLabels(req: Request) {
-    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    const id = parseInt(req.params.id as string, 10);
-    return await this.service.listLabels(id, userId);
-  }
-
-  /**
-   * @swagger
-   * /email-connections/{id}/label:
-   *   patch:
-   *     tags: [Email Connections]
-   *     summary: Set Gmail label to monitor for bank emails
-   *     security:
-   *       - bearerAuth: []
-   *     parameters:
-   *       - in: path
-   *         name: id
-   *         required: true
-   *         schema:
-   *           type: integer
-   *           example: 1
-   *     requestBody:
-   *       required: true
-   *       content:
-   *         application/json:
-   *           schema:
-   *             type: object
-   *             required: [label_id, label_name]
-   *             properties:
-   *               label_id:
-   *                 type: string
-   *                 example: Label_12345
-   *               label_name:
-   *                 type: string
-   *                 example: Bank Alerts
-   *     responses:
-   *       '200':
-   *         description: Label updated
-   *         content:
-   *           application/json:
-   *             schema:
-   *               $ref: '#/components/schemas/EmailConnection'
-   *       '401':
-   *         $ref: '#/components/responses/Unauthorized'
-   *       '500':
-   *         $ref: '#/components/responses/InternalServerError'
-   */
-  @Patch('/:id/label', { validate: SetLabelSchema })
-  async setLabel(req: Request) {
-    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    const id = parseInt(req.params.id as string, 10);
-    return await this.service.setLabel(id, userId, req.body as SetLabelDTO);
   }
 
   /**

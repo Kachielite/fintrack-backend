@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { google } from 'googleapis';
+import { google, gmail_v1 } from 'googleapis';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { tokenEncryptionService } from '@/common/utils/token-encryption';
 import {
@@ -12,23 +12,30 @@ import { IIngestionRepository } from '@/modules/ingestion/ingestion.repository';
 import { IConnectionStats } from '@/modules/ingestion/ingestion.interface';
 import {
   GmailCallbackDTO,
-  SetLabelDTO,
   EmailConnectionResponseDTO,
-  GmailLabelDTO,
 } from './email-connection.dto';
 import { IEmailConnection } from './email-connection.interface';
+import { ConnectionStatusEnum } from './email-connection.enum';
 import { IGeneralResponse } from '@/common/types/interface';
 
-const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
-const SYSTEM_LABEL_PREFIXES = ['CATEGORY_', 'CHAT', 'SENT', 'INBOX', 'TRASH', 'SPAM', 'DRAFT', 'STARRED', 'IMPORTANT', 'UNREAD'];
+const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.modify'];
+
+const UNIVERSAL_FILTER_QUERY =
+  'subject:(debit OR credit OR debited OR credited OR "transaction alert" OR ' +
+  '"account alert" OR "payment alert" OR "transfer alert" OR ' +
+  '"transaction notification" OR "you have sent" OR "you have received" OR ' +
+  '"payment received" OR "payment sent" OR "funds received" OR ' +
+  '"funds transferred" OR withdrawal) ' +
+  '-has:attachment -subject:(statement OR OTP OR "one-time" OR password OR promo OR newsletter OR offer)';
+
+const GMAIL_LABEL_NAME = 'Bank Transactions';
+const BACKFILL_MAX_MESSAGES = 500;
 
 export interface IEmailConnectionService {
   getAuthUrl(userId: number): string;
   handleCallback(userId: number, data: GmailCallbackDTO): Promise<EmailConnectionResponseDTO>;
   listConnections(userId: number): Promise<EmailConnectionResponseDTO[]>;
   getConnection(id: number, userId: number): Promise<EmailConnectionResponseDTO>;
-  listLabels(id: number, userId: number): Promise<GmailLabelDTO[]>;
-  setLabel(id: number, userId: number, data: SetLabelDTO): Promise<EmailConnectionResponseDTO>;
   triggerSync(id: number, userId: number): Promise<IGeneralResponse<null>>;
   getStats(id: number, userId: number): Promise<IConnectionStats>;
   deleteConnectionData(id: number, userId: number): Promise<IGeneralResponse<null>>;
@@ -70,19 +77,44 @@ class EmailConnectionService implements IEmailConnectionService {
 
       oauth2Client.setCredentials(tokens);
       const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
       const profile = await gmail.users.getProfile({ userId: 'me' });
       const gmailAddress = profile.data.emailAddress as string;
+
+      const labelId = await this.findOrCreateLabel(gmail, GMAIL_LABEL_NAME);
+      await this.createGmailFilter(gmail, labelId);
 
       const encryptedAccessToken = tokenEncryptionService.encrypt(tokens.access_token);
       const encryptedRefreshToken = tokenEncryptionService.encrypt(tokens.refresh_token);
       const tokenExpiresAt = new Date(tokens.expiry_date || Date.now() + 3600 * 1000);
 
-      const connection = await this.connectionRepository.create({
-        userId,
-        gmailAddress,
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        tokenExpiresAt,
+      const existing = await this.connectionRepository.findByUserAndEmail(userId, gmailAddress);
+
+      let connection: IEmailConnection;
+      if (existing) {
+        connection = await this.connectionRepository.update(existing.id, {
+          encryptedAccessToken,
+          encryptedRefreshToken,
+          tokenExpiresAt,
+          gmailLabelId: labelId,
+          gmailLabelName: GMAIL_LABEL_NAME,
+          status: ConnectionStatusEnum.ACTIVE,
+        });
+      } else {
+        connection = await this.connectionRepository.create({
+          userId,
+          gmailAddress,
+          encryptedAccessToken,
+          encryptedRefreshToken,
+          tokenExpiresAt,
+          gmailLabelId: labelId,
+          gmailLabelName: GMAIL_LABEL_NAME,
+          status: ConnectionStatusEnum.ACTIVE,
+        });
+      }
+
+      this.backfillExistingEmails(connection.id, labelId, oauth2Client).catch((err) => {
+        logger.error(`[EmailConnection] Backfill failed for connection ${connection.id}: ${err?.message}`);
       });
 
       return this.mapToDTO(connection);
@@ -114,55 +146,11 @@ class EmailConnectionService implements IEmailConnectionService {
     }
   }
 
-  async listLabels(id: number, userId: number): Promise<GmailLabelDTO[]> {
-    try {
-      const connection = await this.connectionRepository.findById(id, userId);
-      if (!connection) throw new ResourceNotFoundException('Email connection not found');
-
-      const oauth2Client = await this.getOAuth2Client(connection);
-      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-      const resp = await gmail.users.labels.list({ userId: 'me' });
-
-      const labels = (resp.data.labels || []).filter((l) => {
-        if (!l.id || !l.name) return false;
-        return !SYSTEM_LABEL_PREFIXES.some((prefix) => l.id!.startsWith(prefix) || l.name!.startsWith(prefix));
-      });
-
-      return labels.map((l) => ({
-        id: l.id!,
-        name: l.name!,
-        messages_total: l.messagesTotal ?? undefined,
-      }));
-    } catch (error) {
-      if (error instanceof ResourceNotFoundException) throw error;
-      logger.error(`Error listing Gmail labels for connection ${id} - ${error}`);
-      throw new InternalServerException('Failed to list Gmail labels');
-    }
-  }
-
-  async setLabel(id: number, userId: number, data: SetLabelDTO): Promise<EmailConnectionResponseDTO> {
-    try {
-      const connection = await this.connectionRepository.findById(id, userId);
-      if (!connection) throw new ResourceNotFoundException('Email connection not found');
-
-      const updated = await this.connectionRepository.updateLabel(id, userId, {
-        gmailLabelId: data.label_id,
-        gmailLabelName: data.label_name,
-      });
-      return this.mapToDTO(updated);
-    } catch (error) {
-      if (error instanceof ResourceNotFoundException) throw error;
-      logger.error(`Error setting label for connection ${id} - ${error}`);
-      throw new InternalServerException('Failed to set Gmail label');
-    }
-  }
-
   async triggerSync(id: number, userId: number): Promise<IGeneralResponse<null>> {
     try {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
 
-      // Fire and forget — resolve ingestionService lazily to avoid circular dep at module load
       setImmediate(() => {
         const { container } = require('tsyringe');
         const IngestionService = require('@/modules/ingestion/ingestion.service').default;
@@ -248,6 +236,78 @@ class EmailConnectionService implements IEmailConnectionService {
     }
 
     return oauth2Client;
+  }
+
+  private async findOrCreateLabel(gmail: gmail_v1.Gmail, labelName: string): Promise<string> {
+    const listRes = await gmail.users.labels.list({ userId: 'me' });
+    const existing = listRes.data.labels?.find(
+      (l) => l.name?.toLowerCase() === labelName.toLowerCase(),
+    );
+    if (existing?.id) return existing.id;
+
+    const createRes = await gmail.users.labels.create({
+      userId: 'me',
+      requestBody: {
+        name: labelName,
+        labelListVisibility: 'labelShow',
+        messageListVisibility: 'show',
+      },
+    });
+
+    if (!createRes.data.id) {
+      throw new Error(`Failed to create Gmail label "${labelName}"`);
+    }
+
+    return createRes.data.id;
+  }
+
+  private async createGmailFilter(gmail: gmail_v1.Gmail, labelId: string): Promise<void> {
+    const filtersRes = await gmail.users.settings.filters.list({ userId: 'me' });
+    const alreadyExists = filtersRes.data.filter?.some(
+      (f) => f.action?.addLabelIds?.includes(labelId),
+    );
+    if (alreadyExists) return;
+
+    await gmail.users.settings.filters.create({
+      userId: 'me',
+      requestBody: {
+        criteria: { query: UNIVERSAL_FILTER_QUERY },
+        action: {
+          addLabelIds: [labelId],
+          removeLabelIds: [],
+        },
+      },
+    });
+  }
+
+  private async backfillExistingEmails(
+    connectionId: number,
+    labelId: string,
+    oauth2Client: any,
+  ): Promise<void> {
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const searchRes = await gmail.users.messages.list({
+      userId: 'me',
+      q: UNIVERSAL_FILTER_QUERY,
+      maxResults: BACKFILL_MAX_MESSAGES,
+    });
+
+    const messages = searchRes.data.messages;
+    if (!messages || messages.length === 0) return;
+
+    const ids = messages.filter((m) => m.id).map((m) => m.id!);
+    if (ids.length === 0) return;
+
+    await gmail.users.messages.batchModify({
+      userId: 'me',
+      requestBody: {
+        ids,
+        addLabelIds: [labelId],
+      },
+    });
+
+    logger.info(`[EmailConnection] Backfilled ${ids.length} messages for connection ${connectionId}`);
   }
 
   private createOAuth2Client(redirectUri?: string) {
