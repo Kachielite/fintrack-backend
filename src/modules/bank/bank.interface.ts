@@ -4,6 +4,7 @@ export interface IBank {
   shortCode: string;
   country: string | null;
   knownSenderEmails: string[];
+  knownSenderDomains: string[];
   logoUrl: string | null;
   isActive: boolean;
   createdAt: Date;
