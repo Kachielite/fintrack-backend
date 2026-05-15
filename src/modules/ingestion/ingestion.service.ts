@@ -5,7 +5,7 @@ import syncEventBus from '@/common/lib/sync-event-bus';
 import { IIngestionRepository } from './ingestion.repository';
 import { IEmailConnectionRepository } from '@/modules/email-connection/email-connection.repository';
 import { IBankRepository } from '@/modules/bank/bank.repository';
-import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
+import { IParserRuleService, IdentifiedBank } from '@/modules/parser-rule/parser-rule.service';
 import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { IUserRepository } from '@/modules/user/user.repository';
@@ -259,12 +259,19 @@ class IngestionService implements IIngestionService {
 
       const senderEmail = this.extractEmail(fromAddress);
       const transactionSignal = this.getTransactionSignal(emailBody, emailSubject);
-      let bank = await this.bankRepository.findBySenderEmail(senderEmail);
+      const bankMatch = await this.bankRepository.findBySenderEmail(senderEmail);
+      let bank = bankMatch?.bank ?? null;
+
+      if (bankMatch) {
+        logger.info(
+          `[Bank] ${bankMatch.source}: matched "${bank!.name}" from ${senderEmail}, messageId=${messageId}`,
+        );
+      }
 
       if (!bank) {
         if (!transactionSignal.isTransaction) {
           logger.info(
-            `Non-transactional email from unknown sender ${senderEmail}, messageId=${messageId}, reason=${transactionSignal.reason}`,
+            `[Bank] Non-transactional email from unknown sender ${senderEmail}, messageId=${messageId}, reason=${transactionSignal.reason}`,
           );
           await this.ingestionRepository.markProcessed({
             emailConnectionId: connectionId,
@@ -274,10 +281,27 @@ class IngestionService implements IIngestionService {
           return false;
         }
 
-        logger.info(`Unknown sender ${senderEmail} — asking AI to identify bank, messageId=${messageId}`);
-        const identified = await this.parserRuleService.identifyBank(senderEmail, emailSubject, emailBody);
+        logger.info(`[Bank] Unknown sender ${senderEmail} — asking AI to identify bank, messageId=${messageId}`);
+        let identified: IdentifiedBank | null = null;
+        try {
+          identified = await this.parserRuleService.identifyBank(senderEmail, emailSubject, emailBody);
+        } catch (err) {
+          if (this.isRateLimitError(err)) {
+            logger.warn(
+              `[Bank] identifyBank rate-limited for ${senderEmail}; deferring, messageId=${messageId}`,
+            );
+            await this.ingestionRepository.markProcessed({
+              emailConnectionId: connectionId,
+              gmailMessageId: messageId,
+              outcome: 'non_transaction',
+            });
+            return false;
+          }
+          throw err;
+        }
+
         if (!identified) {
-          logger.info(`AI: not a bank email from ${senderEmail}, messageId=${messageId}`);
+          logger.info(`[Bank] AI: not a bank email from ${senderEmail}, messageId=${messageId}`);
           await this.ingestionRepository.markProcessed({
             emailConnectionId: connectionId,
             gmailMessageId: messageId,
@@ -286,7 +310,9 @@ class IngestionService implements IIngestionService {
           return false;
         }
 
-        logger.info(`AI identified bank "${identified.name}" from ${senderEmail} — registering`);
+        logger.info(
+          `[Bank] ai_identified: "${identified.name}" from ${senderEmail} — registering, messageId=${messageId}`,
+        );
         bank = await this.bankRepository.upsertByShortCode({
           name: identified.name,
           shortCode: identified.shortCode,

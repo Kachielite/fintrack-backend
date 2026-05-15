@@ -16,6 +16,7 @@ const BANKS = [
       'alerts@gtbank.com',
       'gtbank@gtbank.com',
     ],
+    knownSenderDomains: ['gtbank.com'],
   },
   {
     name: 'Access Bank',
@@ -27,6 +28,7 @@ const BANKS = [
       'alerts@accessbankplc.com',
       'accessbank@accessbankplc.com',
     ],
+    knownSenderDomains: ['accessbankplc.com'],
   },
   {
     name: 'Stanbic IBTC',
@@ -38,6 +40,7 @@ const BANKS = [
       'noreply@stanbicibtc.com',
       'alerts@stanbicibtc.com',
     ],
+    knownSenderDomains: ['stanbicibtc.com'],
   },
   {
     name: 'Zenith Bank',
@@ -47,8 +50,10 @@ const BANKS = [
       'alerts@zenithbank.com',
       'noreply@zenithbank.com',
       'no_reply@zenithbank.com',
+      'ebusinessgroup@zenithbank.com',
       'zenithbank@zenithbank.com',
     ],
+    knownSenderDomains: ['zenithbank.com'],
   },
   {
     name: 'First Bank',
@@ -59,6 +64,7 @@ const BANKS = [
       'noreply@firstbanknigeria.com',
       'no_reply@firstbanknigeria.com',
     ],
+    knownSenderDomains: ['firstbanknigeria.com'],
   },
   {
     name: 'UBA',
@@ -70,6 +76,7 @@ const BANKS = [
       'no_reply@ubagroup.com',
       'uba@ubagroup.com',
     ],
+    knownSenderDomains: ['ubagroup.com'],
   },
   {
     name: 'Kuda Bank',
@@ -81,6 +88,7 @@ const BANKS = [
       'no_reply@kuda.com',
       'alerts@kuda.com',
     ],
+    knownSenderDomains: ['kuda.com'],
   },
   {
     name: 'Opay',
@@ -92,6 +100,7 @@ const BANKS = [
       'alerts@opay.com',
       'notification@opay.com',
     ],
+    knownSenderDomains: ['opay.com'],
   },
   {
     name: 'Moniepoint',
@@ -102,6 +111,7 @@ const BANKS = [
       'alerts@moniepoint.com',
       'no_reply@moniepoint.com',
     ],
+    knownSenderDomains: ['moniepoint.com'],
   },
   {
     name: 'Sterling Bank',
@@ -112,6 +122,7 @@ const BANKS = [
       'noreply@sterling.ng',
       'no_reply@sterling.ng',
     ],
+    knownSenderDomains: ['sterling.ng'],
   },
   {
     name: 'Ecobank',
@@ -122,6 +133,7 @@ const BANKS = [
       'noreply@ecobank.com',
       'alerts@ecobank.com',
     ],
+    knownSenderDomains: ['ecobank.com'],
   },
   {
     name: 'Fidelity Bank',
@@ -132,6 +144,7 @@ const BANKS = [
       'noreply@fidelitybank.ng',
       'no_reply@fidelitybank.ng',
     ],
+    knownSenderDomains: ['fidelitybank.ng'],
   },
   {
     name: 'FCMB',
@@ -142,6 +155,7 @@ const BANKS = [
       'noreply@fcmb.com',
       'no_reply@fcmb.com',
     ],
+    knownSenderDomains: ['fcmb.com'],
   },
   {
     name: 'Wise',
@@ -152,6 +166,7 @@ const BANKS = [
       'noreply@wise.com',
       'no-reply@wise.com',
     ],
+    knownSenderDomains: ['wise.com'],
   },
   {
     name: 'Monzo',
@@ -162,6 +177,7 @@ const BANKS = [
       'no-reply@monzo.com',
       'alerts@monzo.com',
     ],
+    knownSenderDomains: ['monzo.com'],
   },
 ];
 
@@ -177,6 +193,7 @@ async function seed() {
         target: BankSchema.shortCode,
         set: {
           knownSenderEmails: bank.knownSenderEmails,
+          knownSenderDomains: bank.knownSenderDomains,
           country: bank.country,
         },
       });
