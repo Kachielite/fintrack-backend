@@ -2,8 +2,13 @@ import 'dotenv/config';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 
-const DEFAULT_ADMIN_EMAIL = 'admin@fintrack.app';
-const DEFAULT_ADMIN_PASSWORD = 'ChangeMe123!';
+const DEFAULT_ADMIN_EMAIL = process.env.ADMIN_SEED_EMAIL;
+const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_SEED_PASSWORD;
+
+if (!DEFAULT_ADMIN_EMAIL || !DEFAULT_ADMIN_PASSWORD) {
+  console.error('Missing ADMIN_SEED_EMAIL or ADMIN_SEED_PASSWORD in environment');
+  process.exit(1);
+}
 
 async function seed() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
