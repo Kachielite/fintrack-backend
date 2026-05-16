@@ -113,6 +113,23 @@ class ParserRuleController extends BaseController {
 
   /**
    * @swagger
+   * /parser-rules/templates/bulk-reaudit:
+   *   post:
+   *     tags: [Parser Rules]
+   *     summary: Re-audit all failed_audit templates with the updated pipeline
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '200':
+   *         description: Summary of promoted vs still-failed templates
+   */
+  @Post('/templates/bulk-reaudit')
+  async bulkReauditFailed(_req: Request) {
+    return await this.service.bulkReauditFailed();
+  }
+
+  /**
+   * @swagger
    * /parser-rules/templates/{id}/promote:
    *   patch:
    *     tags: [Parser Rules]

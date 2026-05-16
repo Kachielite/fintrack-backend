@@ -22,6 +22,7 @@ export interface IParserRuleRepository {
   findProductionTemplatesByBank(bankId: number): Promise<IParserTemplateWithRules[]>;
   findTemplateById(id: number): Promise<IParserTemplateWithRules | null>;
   findAllTemplates(): Promise<IParserTemplate[]>;
+  findTemplatesByStatus(status: RuleStatusEnum): Promise<IParserTemplateWithRules[]>;
   updateTemplateStatus(id: number, status: RuleStatusEnum, notes?: string): Promise<void>;
   updateTemplateConfidence(id: number, matchCount: number, failCount: number): Promise<void>;
   updateTemplateLastFailed(id: number): Promise<void>;
@@ -99,6 +100,14 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
       .select()
       .from(ParserTemplateSchema)
       .where(eq(ParserTemplateSchema.status, RuleStatusEnum.PRODUCTION))) as IParserTemplate[];
+  }
+
+  async findTemplatesByStatus(status: RuleStatusEnum): Promise<IParserTemplateWithRules[]> {
+    const templates = (await this.db.client
+      .select()
+      .from(ParserTemplateSchema)
+      .where(eq(ParserTemplateSchema.status, status))) as IParserTemplate[];
+    return this.hydrateTemplates(templates);
   }
 
   async updateTemplateStatus(

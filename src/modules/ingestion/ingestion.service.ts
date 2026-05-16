@@ -702,11 +702,17 @@ class IngestionService implements IIngestionService {
 
   private sanitizeMerchant(value: string | undefined): string {
     if (!value) return 'Unknown';
-    let text = value
-      .replace(/\s+/g, ' ')
-      .trim();
+    let text = value.replace(/\s+/g, ' ').trim();
 
     const stopPhrases = [
+      'If you experience any problems',
+      'If you experience any problem',
+      'Kindly contact us',
+      'Please contact us',
+      'For enquiries',
+      'For more information',
+      'Do not reply',
+      'Do not respond',
       'Transaction Reference',
       'Account Number',
       'Transaction Date',
@@ -724,21 +730,31 @@ class IngestionService implements IIngestionService {
     ];
     for (const phrase of stopPhrases) {
       const idx = text.toLowerCase().indexOf(phrase.toLowerCase());
-      if (idx >= 0) {
-        text = text.slice(0, idx).trim();
-      }
+      if (idx >= 0) text = text.slice(0, idx).trim();
     }
 
     text = text
+      // Remove email addresses
       .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '')
+      // Remove leading long account/session numbers
       .replace(/^\d{12,}\s+/i, '')
+      // Remove pipe-separated TRF reference codes like "/TRF|2MPTc8ze3|1977788338..."
+      .replace(/\/TRF[\|][A-Z0-9|_-]+/gi, '')
+      // Remove "BankName *****12345" suffixes appended by Moniepoint/OPay-style narrations
+      .replace(
+        /\s+(?:Moniepoint(?:\s+MFB)?|OPay|PalmPay|Opay|First\s*Bank(?:\s+of\s+Nigeria)?|GTBank|Zenith(?:\s+Bank)?|Access(?:\s+Bank)?|UBA|Stanbic\s+IBTC(?:\s+Bank)?|Ecobank(?:\s+Nigeria)?|Fidelity(?:\s+Bank)?|Sterling(?:\s+Bank)?|Keystone(?:\s+Bank)?|Union(?:\s+Bank)?|Wema(?:\s+Bank)?)\s*\*+\d{2,}/gi,
+        '',
+      )
+      // Remove any remaining "*****12345" masked account suffixes
+      .replace(/\s+\*{3,}\d{2,}/g, '')
       .replace(/\bHEAD OFFICE BRANCH\b[\s\S]*$/i, '')
       .replace(/\b(if\s+you\s+need\s+assistance|thank\s+you\s+for\s+banking|remember:)\b[\s\S]*$/i, '')
-      .replace(/[\-,:;]+$/g, '')
+      .replace(/[-,:;|]+$/g, '')
       .trim();
 
     if (!text) return 'Unknown';
-    return text.length > 120 ? text.slice(0, 120).trim() : text;
+    // Tighter cap — 80 chars is enough for any real merchant name
+    return text.length > 80 ? text.slice(0, 80).trim() : text;
   }
 
   private sanitizeReference(value: string | undefined): string | undefined {
@@ -824,6 +840,8 @@ class IngestionService implements IIngestionService {
     if (primary && !this.isMidnight(primary, value)) return primary;
 
     const combined = `${subject}\n${body}`;
+
+    // 1. Labeled field (most reliable)
     const labeled = this.extractFieldValue(combined, [
       'transaction\\s+date\\s*&\\s*time',
       'time\\s+of\\s+transaction',
@@ -835,11 +853,33 @@ class IngestionService implements IIngestionService {
     const labeledDate = this.parseDateCandidate(labeled);
     if (labeledDate) return labeledDate;
 
+    // 2. Loose dd/mm/yyyy or dd-mm-yyyy with optional time
     const looseMatch = combined.match(
       /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/,
     )?.[0];
     const looseDate = this.parseDateCandidate(looseMatch);
     if (looseDate) return looseDate;
+
+    // 3. Compact date like "01Sep2025", "30Apr2026"
+    const MON = 'Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
+    const compactMatch = combined.match(new RegExp(`\\b(\\d{1,2})(${MON})(\\d{4})\\b`, 'i'));
+    if (compactMatch) {
+      const compactDate = this.parseDateCandidate(`${compactMatch[1]} ${compactMatch[2]} ${compactMatch[3]}`);
+      if (compactDate) return compactDate;
+    }
+
+    // 4. Full ISO date embedded in text: YYYY-MM-DD
+    const isoFullMatch = combined.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/)?.[0];
+    const isoFullDate = this.parseDateCandidate(isoFullMatch);
+    if (isoFullDate) return isoFullDate;
+
+    // 5. Year-month only: YYYY-MM (e.g. "Credit Interest for 2025-12") → last day of that month
+    const yearMonthMatch = combined.match(/\b(20\d{2})-(0[1-9]|1[0-2])\b/);
+    if (yearMonthMatch) {
+      const year = Number(yearMonthMatch[1]);
+      const month = Number(yearMonthMatch[2]);
+      return new Date(year, month, 0); // day 0 of month+1 = last day of month
+    }
 
     if (primary) return primary;
     return new Date();
