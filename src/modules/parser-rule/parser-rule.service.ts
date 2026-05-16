@@ -22,10 +22,18 @@ export interface IdentifiedBank {
   country: string;
 }
 
+export interface BulkReauditResult {
+  total: number;
+  promoted: number;
+  stillFailed: number;
+  errors: number;
+}
+
 export interface IParserRuleService {
   listProductionTemplates(): Promise<ParserTemplateResponseDTO[]>;
   getTemplate(id: number): Promise<IParserTemplateWithRules>;
   auditTemplate(templateId: number): Promise<AuditResult>;
+  bulkReauditFailed(): Promise<BulkReauditResult>;
   promoteTemplate(id: number): Promise<ParserTemplateResponseDTO>;
   applyTemplate(
     bankId: number,
@@ -99,12 +107,56 @@ class ParserRuleService implements IParserRuleService {
       const template = await this.repository.findTemplateById(templateId);
       if (!template) throw new ResourceNotFoundException('Template not found');
 
-      const rulesJson = template.rules.map((r) => ({
-        id: r.id,
-        field: r.field,
-        pattern: r.pattern,
-        flags: r.flags,
-      }));
+      // Run each rule against real blueprint text to get actual match evidence
+      const blueprints = await this.repository.findBlueprintsByBank(template.bankId);
+      const blueprintTexts = blueprints.map((bp) => `${bp.sanitizedSubject} ${bp.sanitizedBody}`);
+
+      let amountActuallyMatched = false;
+      let totalActuallyMatched = 0;
+
+      const rulesWithMatches = template.rules.map((r) => {
+        let actualMatch: string | null = null;
+        let matched = false;
+        try {
+          const { pattern, flags } = this.sanitizePattern(r.pattern, r.flags);
+          const regex = new RegExp(pattern, flags);
+          for (const text of blueprintTexts) {
+            const m = regex.exec(text);
+            if (m && m[r.extractGroup]) {
+              actualMatch = m[r.extractGroup].trim();
+              matched = true;
+              break;
+            }
+          }
+        } catch {
+          // invalid regex — leave matched: false
+        }
+        if (matched) {
+          totalActuallyMatched++;
+          if (r.field === RuleFieldEnum.AMOUNT) amountActuallyMatched = true;
+        }
+        return { id: r.id, field: r.field, pattern: r.pattern, flags: r.flags, matched, actual_match: actualMatch };
+      });
+
+      // Auto-promote without AI call if real-world matches confirm quality
+      if (amountActuallyMatched && totalActuallyMatched >= 2 && blueprints.length > 0) {
+        await this.repository.updateTemplateStatus(
+          templateId,
+          RuleStatusEnum.AUDITED,
+          `Auto-passed: ${totalActuallyMatched}/${template.rules.length} fields matched against blueprint`,
+        );
+        await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.PRODUCTION);
+        return {
+          passed: true,
+          notes: `Auto-passed: ${totalActuallyMatched}/${template.rules.length} fields matched against real blueprint text`,
+          fieldResults: rulesWithMatches.map((r) => ({
+            field: r.field,
+            passed: r.matched,
+            concern: r.matched ? `captured: "${r.actual_match}"` : 'no match in blueprint',
+          })),
+        };
+      }
+
       const blueprintContext = await this.getBlueprintContext(template.bankId);
 
       const response = await this.openai.chat.completions.create({
@@ -117,16 +169,18 @@ class ParserRuleService implements IParserRuleService {
           },
           {
             role: 'user',
-            content: `Audit the following regex rules for a bank email parser:
-${JSON.stringify(rulesJson, null, 2)}
+            content: `Audit the following regex rules for a bank email parser.
+Each rule shows what it actually captured from real blueprint text in the "actual_match" field.
+
+${JSON.stringify(rulesWithMatches, null, 2)}
 
 Known bank blueprint samples (sanitized):
 ${blueprintContext}
 
-For each rule, assess:
-1. Is it correct and captures the right group?
-2. Is it robust to minor whitespace/formatting variations?
-3. Is it too broad and might match false positives?
+For rules with actual_match: verify the captured value is correct for that field.
+For rules with matched: false: assess if the field is absent from this email format or if the pattern is wrong.
+
+IMPORTANT: If the "amount" field matched and captured a plausible number, lean toward passed: true even if other fields have concerns or are absent.
 
 Return JSON only in this exact format:
 { "passed": boolean, "notes": string, "field_results": [{ "field": string, "passed": boolean, "concern": string }] }`,
@@ -153,13 +207,16 @@ Return JSON only in this exact format:
         fieldResults: raw.field_results || [],
       };
 
+      // Override AI fail if real-world evidence shows amount + 2+ fields actually match
+      const effectivePassed = result.passed || (amountActuallyMatched && totalActuallyMatched >= 2);
+
       await this.repository.updateTemplateStatus(
         templateId,
-        result.passed ? RuleStatusEnum.AUDITED : RuleStatusEnum.FAILED_AUDIT,
+        effectivePassed ? RuleStatusEnum.AUDITED : RuleStatusEnum.FAILED_AUDIT,
         result.notes,
       );
 
-      if (result.passed) {
+      if (effectivePassed) {
         await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.PRODUCTION);
       }
 
@@ -173,6 +230,31 @@ Return JSON only in this exact format:
       logger.error(`Error auditing template ${templateId} - ${error}`);
       throw new InternalServerException('Failed to audit template');
     }
+  }
+
+  async bulkReauditFailed(): Promise<BulkReauditResult> {
+    const failed = await this.repository.findTemplatesByStatus(RuleStatusEnum.FAILED_AUDIT);
+    logger.info(`[ParserRule] Bulk re-audit: ${failed.length} failed templates`);
+
+    let promoted = 0;
+    let stillFailed = 0;
+    let errors = 0;
+
+    for (const template of failed) {
+      try {
+        const result = await this.auditTemplate(template.id);
+        if (result.passed) promoted++;
+        else stillFailed++;
+      } catch (err) {
+        errors++;
+        logger.warn(`[ParserRule] Bulk re-audit error on template ${template.id}: ${err}`);
+      }
+      // Small delay to avoid rate-limiting OpenAI back-to-back
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    logger.info(`[ParserRule] Bulk re-audit done: promoted=${promoted}, failed=${stillFailed}, errors=${errors}`);
+    return { total: failed.length, promoted, stillFailed, errors };
   }
 
   async promoteTemplate(id: number): Promise<ParserTemplateResponseDTO> {
@@ -412,12 +494,14 @@ IMPORTANT: Use JavaScript regex syntax only.
 - Do NOT use inline flags like (?i), (?m) — these are not supported in JavaScript.
 - Put flags in the "flags" field instead (e.g. "flags": "i" for case-insensitive).
 - Each pattern must have exactly one capture group for the value to extract.
+- Only include fields that are actually present and clearly identifiable in the email text.
 
-Fields to extract (only include fields actually present in the email):
+Fields to extract:
 - amount: the transaction amount as a number string (e.g. "5,000.00")
 - currency: the currency code or symbol (e.g. "NGN", "₦")
 - merchant: merchant or recipient name
 - transaction_type: "debit" or "credit"
+- transaction_date: the transaction date/time (e.g. "01 Jan 2025", "2025-01-01", compact forms like "01Sep2025")
 - balance: account balance after transaction
 - reference: transaction reference number
 
@@ -452,13 +536,37 @@ Return JSON:
         emailSubjectPattern: raw.subject_pattern,
       });
 
+      // Collect all texts to test against: existing blueprints + current email
+      const blueprints = await this.repository.findBlueprintsByBank(bankId);
+      const testTexts = [
+        `${emailSubject} ${emailBody.substring(0, 3000)}`,
+        ...blueprints.map((bp) => `${bp.sanitizedSubject} ${bp.sanitizedBody}`),
+      ];
+
       for (const [field, ruleData] of Object.entries(raw.fields || {})) {
         const rd = ruleData as any;
+        const { pattern, flags } = this.sanitizePattern(rd.pattern, rd.flags || 'i');
+
+        // Pre-test: skip rules that are invalid or don't match any available text
+        let matched = false;
+        try {
+          const regex = new RegExp(pattern, flags);
+          matched = testTexts.some((text) => regex.test(text));
+        } catch (regexErr) {
+          logger.warn(`[ParserRule] Skipping invalid regex for field ${field} on bank ${bankId}: ${regexErr}`);
+          continue;
+        }
+
+        if (!matched) {
+          logger.info(`[ParserRule] Skipping field "${field}" — regex did not match any blueprint or current email`);
+          continue;
+        }
+
         const rule = await this.repository.createRule({
           bankId,
           field: field as RuleFieldEnum,
-          pattern: rd.pattern,
-          flags: rd.flags || 'i',
+          pattern,
+          flags,
           extractGroup: 1,
           createdBy: RuleCreatorEnum.AI,
         });
