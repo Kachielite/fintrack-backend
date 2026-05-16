@@ -16,7 +16,6 @@ import {
 import { IGeneralResponse } from '@/common/types/interface';
 import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
-import { CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { BudgetPeriodEnum } from './budget.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 

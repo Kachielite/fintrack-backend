@@ -15,6 +15,8 @@ import EmailConnectionService, {
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
+import { ICategoryRepository } from '@/modules/category/category.repository';
+import { ICategory } from '@/modules/category/category.interface';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -30,31 +32,9 @@ const NON_TRANSACTION_KEYWORDS = [
   'how do you rate', 'unsubscribe', 'privacy policy',
 ];
 
-const CATEGORY_REGEX_RULES: Array<{ category: CategoryEnum; pattern: RegExp }> = [
-  { category: CategoryEnum.BUSINESS_PAYMENT, pattern: /(POS|WEB|PAYMENT|STORE|MERCHANT|SHOP|ONLINE)\s+[@A-Z0-9_-]+/i },
-  { category: CategoryEnum.SUBSCRIPTIONS, pattern: /(SPOTIFY|NETFLIX|APPLE|MICROSOFT|GOOGLE|YOUTUBE|DISNEY|SUBSCRIPTION|PLAN|PREMIUM|JETBRAINS|GITHUB)/i },
-  { category: CategoryEnum.ENTERTAINMENT_LEISURE, pattern: /(MOVIE|CINEMA|CLUB|TICKET|EVENT|GAME|PLAYSTATION|STEAM)/i },
-  { category: CategoryEnum.MOBILE_INTERNET, pattern: /(MTN|AIRTEL|GLO|9MOBILE|VODAFONE|SAFARICOM|TELKOM|RECHARGE|DATA|TOP\s?UP|BUNDLE)/i },
-  { category: CategoryEnum.UTILITIES, pattern: /(ELECTRIC|POWER|UTILITY|WATER|GAS|BILL|NEPA|KES|KPLC)/i },
-  { category: CategoryEnum.GROCERIES, pattern: /(SUPERMARKET|GROCERY|SHOPRITE|MARKET|DELIVERY|FOODCO|SUPERMART|GLOVO)/i },
-  { category: CategoryEnum.RETAIL_ECOMMERCE, pattern: /(JUMIA|AMAZON|ALIEXPRESS|SHEIN|EBAY|SHOP|STORE|BOUTIQUE|FASHION)/i },
-  { category: CategoryEnum.DINING_FOOD_DELIVERY, pattern: /(EAT|CAFE|FOOD|RESTAURANT|DELIVERY|UBER\s?EATS|JUMIA\s?FOOD|DOORDASH|GLOVO)/i },
-  { category: CategoryEnum.TRANSPORT, pattern: /(UBER|BOLT|TAXI|BUS|TRAIN|FARE|RIDE)/i },
-  { category: CategoryEnum.FUEL_AUTO, pattern: /(FILLING\s?STATION|FUEL|PETROL|OIL|AUTO|CAR|SERVICE|LUBRICANT|MECHANIC)/i },
-  { category: CategoryEnum.TRAVEL, pattern: /(FLIGHT|AIRWAYS|HOTEL|BOOKING|AGENCY|TRIP|VACATION|TRAVEL)/i },
-  { category: CategoryEnum.BANK_CHARGES, pattern: /(CHARGE|FEE|MAINTENANCE|ATM\s?FEE|VAT|BANK\s?FEE)/i },
-  { category: CategoryEnum.CURRENCY_CONVERSION, pattern: /(FX|FOREX|CONVERSION|USD|GBP|EUR|EXCHANGE)/i },
-  { category: CategoryEnum.SALARY_WAGES, pattern: /(SALARY|PAYROLL|WAGES|HRPAY|INCOME|PAYMENT\s?FROM|COMPENSATION|TAPPI)/i },
-  { category: CategoryEnum.REFUNDS_REIMBURSEMENTS, pattern: /(REFUND|REVERSAL|CASHBACK|REV|REIMBURSE)/i },
-  { category: CategoryEnum.HEALTHCARE, pattern: /(HOSPITAL|PHARMACY|MEDICAL|CLINIC|HEALTH|INSURANCE|NHIS)/i },
-  { category: CategoryEnum.EDUCATION, pattern: /(SCHOOL|TUITION|COURSE|EDU|ACADEMY|E-LEARNING|TRAINING|BOOK)/i },
-  { category: CategoryEnum.CHARITY_DONATIONS, pattern: /(CHURCH|MOSQUE|CHARITY|DONATION|TITHE|FOUNDATION|NGO)/i },
-  { category: CategoryEnum.CASH_WITHDRAWAL, pattern: /(ATM|CASH\s?WITHDRAWAL|BRANCH)/i },
-  { category: CategoryEnum.PEER_TO_PEER_TRANSFER, pattern: /(IFO|TRANSFER|P2P|SEND|TO|TRF\/\/FRM|BENEFICIARY|MOBILE\s?MONEY|PERSONAL\s?TRANSFER|PAYMENT\s?TO|[A-Z]{2,}\s+[A-Z]{2,}(\s+[A-Z]{2,})?|PAMELA|IRENE|JOEL|SHELLA)/i },
-];
-
 type TriggerSource = 'cron' | 'manual';
 const TEMPLATE_RETRY_COOLDOWN_MS = 2 * 60 * 1000;
+const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface TransactionSignal {
   isTransaction: boolean;
@@ -62,9 +42,10 @@ interface TransactionSignal {
 }
 
 interface CategoryResolution {
-  category: CategoryEnum;
+  category: string;
   source: 'learned' | 'regex_rule' | 'extracted' | 'default_uncategorized';
   matchedRule?: string;
+  verified: boolean;
 }
 
 export interface IIngestionService {
@@ -83,6 +64,7 @@ export interface IIngestionService {
 class IngestionService implements IIngestionService {
   private templateGenerationInFlight = new Set<number>();
   private templateGenerationCooldownUntil = new Map<number, number>();
+  private categoryCache: { categories: ICategory[]; expiresAt: number } | null = null;
 
   constructor(
     @inject('IIngestionRepository') private ingestionRepository: IIngestionRepository,
@@ -96,6 +78,7 @@ class IngestionService implements IIngestionService {
     @inject(EmailConnectionService)
     private emailConnectionService: IEmailConnectionService,
     @inject(NotificationService) private notificationService: INotificationService,
+    @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
   ) {}
 
   async pollAllConnections(): Promise<void> {
@@ -336,6 +319,8 @@ class IngestionService implements IIngestionService {
       const user = await this.userRepository.findById(userId);
       if (!user) return false;
 
+      const dbCategories = await this.getCachedCategories();
+
       const templateResult = await this.parserRuleService.applyTemplate(
         bank.id,
         emailBody,
@@ -358,6 +343,7 @@ class IngestionService implements IIngestionService {
           merchant,
           emailSubject,
           emailBody,
+          dbCategories,
           regexResult.category as string | undefined,
           learnedCategory,
         );
@@ -412,7 +398,7 @@ class IngestionService implements IIngestionService {
           refCurrency: user.refCurrency,
           exchangeRateUsed: exchangeRate,
           transactionDate,
-          status: TransactionStatusEnum.UNVERIFIED,
+          status: categoryResolution.verified ? TransactionStatusEnum.VERIFIED : TransactionStatusEnum.UNVERIFIED,
           reference,
           balance: regexResult.balance as number | undefined,
         });
@@ -468,6 +454,7 @@ class IngestionService implements IIngestionService {
         merchant,
         emailSubject,
         emailBody,
+        dbCategories,
         extractedOrFallback.category as string | undefined,
         learnedCategory,
       );
@@ -518,7 +505,7 @@ class IngestionService implements IIngestionService {
         refCurrency: user.refCurrency,
         exchangeRateUsed: exchangeRate,
         transactionDate: extractedDate,
-        status: TransactionStatusEnum.UNVERIFIED,
+        status: categoryResolution.verified ? TransactionStatusEnum.VERIFIED : TransactionStatusEnum.UNVERIFIED,
         reference,
         balance: extractedOrFallback.balance as number | undefined,
       });
@@ -725,45 +712,49 @@ class IngestionService implements IIngestionService {
     return isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
+  private async getCachedCategories(): Promise<ICategory[]> {
+    const now = Date.now();
+    if (this.categoryCache && this.categoryCache.expiresAt > now) {
+      return this.categoryCache.categories;
+    }
+    const categories = await this.categoryRepository.findActiveWithRegex();
+    this.categoryCache = { categories, expiresAt: now + CATEGORY_CACHE_TTL_MS };
+    return categories;
+  }
+
   private resolveCategory(
     merchant: string,
     subject: string,
     body: string,
+    categories: ICategory[],
     extractedCategory?: string,
-    learnedCategory?: CategoryEnum | null,
+    learnedCategory?: string | null,
   ): CategoryResolution {
     if (learnedCategory) {
-      return {
-        category: learnedCategory,
-        source: 'learned',
-      };
+      return { category: learnedCategory, source: 'learned', verified: true };
     }
 
     const normalized = `${merchant} ${subject} ${body}`.toLowerCase();
-    for (const rule of CATEGORY_REGEX_RULES) {
-      if (rule.pattern.test(normalized)) {
-        return {
-          category: rule.category,
-          source: 'regex_rule',
-          matchedRule: rule.pattern.source,
-        };
+    for (const cat of categories) {
+      if (!cat.regex) continue;
+      try {
+        const pattern = new RegExp(cat.regex, 'i');
+        if (pattern.test(normalized)) {
+          return { category: cat.slug, source: 'regex_rule', matchedRule: cat.regex, verified: false };
+        }
+      } catch {
+        // skip malformed regex
       }
     }
 
     if (extractedCategory) {
-      const maybeCategory = extractedCategory.toLowerCase();
-      if (Object.values(CategoryEnum).includes(maybeCategory as CategoryEnum)) {
-        return {
-          category: maybeCategory as CategoryEnum,
-          source: 'extracted',
-        };
+      const maybeSlug = extractedCategory.toLowerCase().trim();
+      if (maybeSlug) {
+        return { category: maybeSlug, source: 'extracted', verified: false };
       }
     }
 
-    return {
-      category: CategoryEnum.UNCATEGORIZED,
-      source: 'default_uncategorized',
-    };
+    return { category: CategoryEnum.UNCATEGORIZED, source: 'default_uncategorized', verified: false };
   }
 
   private extractEmail(from: string): string {

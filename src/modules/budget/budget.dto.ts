@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import { BudgetPeriodEnum } from './budget.enum';
-import { CategoryEnum } from '@/modules/transaction/transaction.enum';
 
 export const CreateBudgetSchema = z.object({
-  category: z.nativeEnum(CategoryEnum),
+  category: z.string().min(1),
   limit_amount: z.number().positive(),
   currency: z.string(),
   period_type: z.nativeEnum(BudgetPeriodEnum).default(BudgetPeriodEnum.MONTHLY),

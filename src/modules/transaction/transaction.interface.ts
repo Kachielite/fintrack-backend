@@ -1,4 +1,4 @@
-import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from './transaction.enum';
+import { TransactionTypeEnum, TransactionStatusEnum } from './transaction.enum';
 
 export interface ITransaction {
   id: number;
@@ -23,6 +23,10 @@ export interface ITransaction {
   balance: number | null;
   createdAt: Date;
   updatedAt: Date;
+  // Joined bank fields — present on getTransaction detail, absent on list queries
+  bankName?: string | null;
+  bankShortCode?: string | null;
+  bankLogoUrl?: string | null;
 }
 
 export interface ICreateTransaction {
@@ -32,7 +36,7 @@ export interface ICreateTransaction {
   parserTemplateId?: number;
   gmailMessageId?: string;
   merchant: string;
-  category: CategoryEnum;
+  category: string;
   transactionType: TransactionTypeEnum;
   amount: number;
   currency: string;
@@ -49,10 +53,10 @@ export interface ITransactionFilter {
   userId: number;
   page: number;
   limit: number;
-  category?: CategoryEnum;
+  category?: string;
   currency?: string;
   bankId?: number;
-  status?: TransactionStatusEnum;
+  status?: string;
   dateFrom?: Date;
   dateTo?: Date;
   search?: string;

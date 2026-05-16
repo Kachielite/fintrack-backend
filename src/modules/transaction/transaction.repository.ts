@@ -2,8 +2,9 @@ import { inject, injectable } from 'tsyringe';
 import { and, between, count, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
+import { BankSchema } from '@/modules/bank/bank.schema';
 import { ITransaction, ICreateTransaction, ITransactionFilter } from './transaction.interface';
-import { CategoryEnum, TransactionStatusEnum } from './transaction.enum';
+import { TransactionStatusEnum } from './transaction.enum';
 import { IPagination } from '@/common/types/interface';
 
 export interface ITransactionRepository {
@@ -25,9 +26,9 @@ export interface ITransactionRepository {
     merchant: string;
     transactionDate: Date;
   }): Promise<boolean>;
-  findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<CategoryEnum | null>;
+  findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null>;
   findSimilarByMerchant(userId: number, merchant: string, excludeCategory: string, excludeId: number): Promise<ITransaction[]>;
-  bulkUpdateCategory(userId: number, ids: number[], category: CategoryEnum): Promise<number>;
+  bulkUpdateCategory(userId: number, ids: number[], category: string): Promise<number>;
 }
 
 @injectable()
@@ -64,8 +65,35 @@ class TransactionRepositoryImpl implements ITransactionRepository {
 
   async findById(id: number, userId: number): Promise<ITransaction | null> {
     const rows = await this.db.client
-      .select()
+      .select({
+        id: TransactionSchema.id,
+        userId: TransactionSchema.userId,
+        emailConnectionId: TransactionSchema.emailConnectionId,
+        bankId: TransactionSchema.bankId,
+        parserTemplateId: TransactionSchema.parserTemplateId,
+        gmailMessageId: TransactionSchema.gmailMessageId,
+        merchant: TransactionSchema.merchant,
+        category: TransactionSchema.category,
+        transactionType: TransactionSchema.transactionType,
+        amount: TransactionSchema.amount,
+        currency: TransactionSchema.currency,
+        refAmount: TransactionSchema.refAmount,
+        refCurrency: TransactionSchema.refCurrency,
+        exchangeRateUsed: TransactionSchema.exchangeRateUsed,
+        transactionDate: TransactionSchema.transactionDate,
+        status: TransactionSchema.status,
+        originalMerchant: TransactionSchema.originalMerchant,
+        originalCategory: TransactionSchema.originalCategory,
+        reference: TransactionSchema.reference,
+        balance: TransactionSchema.balance,
+        createdAt: TransactionSchema.createdAt,
+        updatedAt: TransactionSchema.updatedAt,
+        bankName: BankSchema.name,
+        bankShortCode: BankSchema.shortCode,
+        bankLogoUrl: BankSchema.logoUrl,
+      })
       .from(TransactionSchema)
+      .leftJoin(BankSchema, eq(TransactionSchema.bankId, BankSchema.id))
       .where(and(eq(TransactionSchema.id, id), eq(TransactionSchema.userId, userId)))
       .limit(1);
     return (rows[0] as ITransaction) ?? null;
@@ -93,8 +121,35 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     const totalItems = Number(totalResult.count);
 
     const items = (await this.db.client
-      .select()
+      .select({
+        id: TransactionSchema.id,
+        userId: TransactionSchema.userId,
+        emailConnectionId: TransactionSchema.emailConnectionId,
+        bankId: TransactionSchema.bankId,
+        parserTemplateId: TransactionSchema.parserTemplateId,
+        gmailMessageId: TransactionSchema.gmailMessageId,
+        merchant: TransactionSchema.merchant,
+        category: TransactionSchema.category,
+        transactionType: TransactionSchema.transactionType,
+        amount: TransactionSchema.amount,
+        currency: TransactionSchema.currency,
+        refAmount: TransactionSchema.refAmount,
+        refCurrency: TransactionSchema.refCurrency,
+        exchangeRateUsed: TransactionSchema.exchangeRateUsed,
+        transactionDate: TransactionSchema.transactionDate,
+        status: TransactionSchema.status,
+        originalMerchant: TransactionSchema.originalMerchant,
+        originalCategory: TransactionSchema.originalCategory,
+        reference: TransactionSchema.reference,
+        balance: TransactionSchema.balance,
+        createdAt: TransactionSchema.createdAt,
+        updatedAt: TransactionSchema.updatedAt,
+        bankName: BankSchema.name,
+        bankShortCode: BankSchema.shortCode,
+        bankLogoUrl: BankSchema.logoUrl,
+      })
       .from(TransactionSchema)
+      .leftJoin(BankSchema, eq(TransactionSchema.bankId, BankSchema.id))
       .where(whereClause)
       .limit(filter.limit)
       .offset(offset)
@@ -176,7 +231,6 @@ class TransactionRepositoryImpl implements ITransactionRepository {
   }): Promise<boolean> {
     const normalizedReference = input.reference?.trim();
 
-    // Reference-based dedup is the strongest signal and should not depend on merchant parsing quality.
     if (normalizedReference) {
       const conditions = [
         eq(TransactionSchema.userId, input.userId),
@@ -196,7 +250,6 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       return rows.length > 0;
     }
 
-    // For transactions with no reference, use a narrow time-series fingerprint to avoid duplicates.
     const from = new Date(input.transactionDate.getTime() - 15 * 60 * 1000);
     const to = new Date(input.transactionDate.getTime() + 15 * 60 * 1000);
     const conditions = [
@@ -243,7 +296,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .limit(50)) as ITransaction[];
   }
 
-  async bulkUpdateCategory(userId: number, ids: number[], category: CategoryEnum): Promise<number> {
+  async bulkUpdateCategory(userId: number, ids: number[], category: string): Promise<number> {
     if (ids.length === 0) return 0;
     const result = await this.db.client
       .update(TransactionSchema)
@@ -258,10 +311,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     return result.length;
   }
 
-  async findLearnedCategoryForMerchant(
-    userId: number,
-    merchant: string,
-  ): Promise<CategoryEnum | null> {
+  async findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null> {
     const normalizedMerchant = merchant.trim().toLowerCase();
     if (!normalizedMerchant) return null;
 
@@ -279,11 +329,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .orderBy(sql`${TransactionSchema.updatedAt} desc`)
       .limit(1);
 
-    const category = rows[0]?.category;
-    if (category && Object.values(CategoryEnum).includes(category as CategoryEnum)) {
-      return category as CategoryEnum;
-    }
-    return null;
+    return rows[0]?.category ?? null;
   }
 }
 

@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from './transaction.enum';
+import { TransactionTypeEnum, TransactionStatusEnum } from './transaction.enum';
 
 export const CorrectTransactionSchema = z.object({
   merchant: z.string().min(1).optional(),
-  category: z.nativeEnum(CategoryEnum).optional(),
+  category: z.string().min(1).optional(),
   transaction_type: z.nativeEnum(TransactionTypeEnum).optional(),
   amount: z.number().optional(),
 });
@@ -12,7 +12,7 @@ export type CorrectTransactionDTO = z.infer<typeof CorrectTransactionSchema>;
 export const TransactionQuerySchema = z.object({
   page: z.coerce.number().default(1),
   limit: z.coerce.number().default(20),
-  category: z.nativeEnum(CategoryEnum).optional(),
+  category: z.string().optional(),
   currency: z.string().optional(),
   bank_id: z.coerce.number().optional(),
   status: z.nativeEnum(TransactionStatusEnum).optional(),
@@ -34,6 +34,6 @@ export type ChartDataQueryDTO = z.infer<typeof ChartDataQuerySchema>;
 
 export const BulkCategorySchema = z.object({
   ids: z.array(z.number().int().positive()).min(1),
-  category: z.nativeEnum(CategoryEnum),
+  category: z.string().min(1),
 });
 export type BulkCategoryDTO = z.infer<typeof BulkCategorySchema>;

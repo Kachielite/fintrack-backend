@@ -19,6 +19,7 @@ import { registerGoalDependencies } from '@/modules/goal/goal.dependencies';
 import { registerInsightDependencies } from '@/modules/insight/insight.dependencies';
 import { registerAdminDependencies } from '@/modules/admin/admin.dependencies';
 import { registerNotificationDependencies } from '@/modules/notification/notification.dependencies';
+import { registerCategoryDependencies } from '@/modules/category/category.dependencies';
 
 import AuthController from '@/modules/auth/auth.controller';
 import UserController from '@/modules/user/user.controller';
@@ -32,6 +33,7 @@ import GoalController from '@/modules/goal/goal.controller';
 import InsightController from '@/modules/insight/insight.controller';
 import AdminController from '@/modules/admin/admin.controller';
 import NotificationController from '@/modules/notification/notification.controller';
+import CategoryController from '@/modules/category/category.controller';
 import IngestionService from '@/modules/ingestion/ingestion.service';
 import TransactionService from '@/modules/transaction/transaction.service';
 import logger from '@/common/lib/logger';
@@ -52,6 +54,7 @@ export async function configureContainer(): Promise<void> {
   await registerBankDependencies();
   await registerParserRuleDependencies();
   await registerNotificationDependencies(); // must come before ingestion
+  await registerCategoryDependencies();
   await registerIngestionDependencies();
   await registerTransactionDependencies();
   await registerExchangeRateDependencies();
@@ -73,6 +76,7 @@ export async function configureContainer(): Promise<void> {
   container.resolve(InsightController);
   container.resolve(AdminController);
   container.resolve(NotificationController);
+  container.resolve(CategoryController);
 
   cron.schedule(`*/${CONSTANTS.GMAIL_POLL_INTERVAL_MINUTES} * * * *`, async () => {
     const ingestionService = container.resolve(IngestionService);

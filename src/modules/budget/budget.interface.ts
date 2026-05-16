@@ -1,5 +1,4 @@
 import { BudgetPeriodEnum } from './budget.enum';
-import { CategoryEnum } from '@/modules/transaction/transaction.enum';
 
 export interface IBudget {
   id: number;
@@ -18,7 +17,7 @@ export interface IBudget {
 
 export interface ICreateBudget {
   userId: number;
-  category: CategoryEnum;
+  category: string;
   limitAmount: number;
   currency: string;
   periodType: BudgetPeriodEnum;
