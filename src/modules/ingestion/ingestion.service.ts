@@ -333,7 +333,11 @@ class IngestionService implements IIngestionService {
         const parsedAmount = Number(regexResult.amount ?? 0);
         const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
         const transactionDate = this.parseTransactionDate(regexResult.date);
-        const merchant = this.sanitizeMerchant((regexResult.merchant as string) || 'Unknown');
+        const merchant = this.resolveMerchant(
+          (regexResult.merchant as string) || undefined,
+          emailBody,
+          emailSubject,
+        );
         const currency = (regexResult.currency as string) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
           userId,
@@ -407,6 +411,11 @@ class IngestionService implements IIngestionService {
           this.parserRuleService.recordMatch(templateResult.templateId).catch((err) => {
             logger.error(`Failed to record regex match for template ${templateResult.templateId} - ${err}`);
           });
+          this.parserRuleService
+            .captureBlueprint(bank.id, normalizedType, emailSubject, emailBody)
+            .catch((err) => {
+              logger.error(`Failed to capture blueprint for bank ${bank.id} - ${err}`);
+            });
         });
 
         await this.ingestionRepository.markProcessed({
@@ -444,7 +453,11 @@ class IngestionService implements IIngestionService {
       const normalizedType = this.normalizeTransactionType(extractedOrFallback.transactionType);
       const parsedAmount = Number(extractedOrFallback.amount ?? 0);
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-      const merchant = this.sanitizeMerchant((extractedOrFallback.merchant as string) || 'Unknown');
+      const merchant = this.resolveMerchant(
+        (extractedOrFallback.merchant as string) || undefined,
+        emailBody,
+        emailSubject,
+      );
       const extractedDate = this.parseTransactionDate(extractedOrFallback.date);
       const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
         userId,
@@ -516,6 +529,13 @@ class IngestionService implements IIngestionService {
         outcome: 'parsed',
         transactionId: transaction.id,
       });
+      setImmediate(() => {
+        this.parserRuleService
+          .captureBlueprint(bank.id, normalizedType, emailSubject, emailBody)
+          .catch((err) => {
+            logger.error(`Failed to capture blueprint for bank ${bank.id} - ${err}`);
+          });
+      });
       logger.info(
         `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
       );
@@ -576,14 +596,19 @@ class IngestionService implements IIngestionService {
     const balanceMatch = combined.match(/(?:current|available)?\s*balance\s*[:\n ]\s*(?:([A-Z]{3})|[₦$£€])?\s*([\d,]+(?:\.\d{1,2})?)/i);
     const referenceRaw = this.extractFieldValue(combined, [
       'transaction\\s+reference',
+      'reference\\s+code',
       'document\\s+number',
       'reference',
     ]);
     const descriptionRaw = this.extractFieldValue(combined, ['description']);
+    const narrationRaw = this.extractFieldValue(combined, ['narration']);
+    const beneficiaryRaw = this.extractFieldValue(combined, ['beneficiary\\s+name']);
     const dateRaw = this.extractFieldValue(combined, [
       'transaction\\s+date\\s*&\\s*time',
       'value\\s+date',
       'time\\s+of\\s+transaction',
+      'effective\\s+date',
+      'date\\s+of\\s+transaction',
     ]);
 
     const typeMatch = combined.match(/\b(debit|credit)\b/i);
@@ -593,7 +618,7 @@ class IngestionService implements IIngestionService {
     return {
       amount: parsedAmount,
       currency: amountMatch[1] || balanceMatch?.[1] || undefined,
-      merchant: this.sanitizeMerchant(descriptionRaw || ''),
+      merchant: this.sanitizeMerchant(beneficiaryRaw || narrationRaw || descriptionRaw || ''),
       transactionType: (typeMatch?.[1] || '').toLowerCase() || TransactionTypeEnum.DEBIT,
       date: this.normalizeDateString(dateRaw),
       balance: balanceMatch?.[2]
@@ -691,6 +716,41 @@ class IngestionService implements IIngestionService {
 
     const canonicalRef = text.match(/[A-Z0-9][A-Z0-9/-]{4,}/i)?.[0];
     return canonicalRef || undefined;
+  }
+
+  private resolveMerchant(rawMerchant: string | undefined, body: string, subject: string): string {
+    const direct = this.sanitizeMerchant(rawMerchant);
+    if (direct !== 'Unknown') return direct;
+
+    const heuristic = this.extractMerchantHeuristic(body, subject);
+    return this.sanitizeMerchant(heuristic);
+  }
+
+  private extractMerchantHeuristic(body: string, subject: string): string | undefined {
+    const combined = `${subject}\n${body}`;
+    const labeled = this.extractFieldValue(combined, [
+      'beneficiary\\s+name',
+      'recipient\\s+name',
+      'receiver\\s+name',
+      'narration',
+      'description',
+      'merchant',
+      'payment\\s+to',
+      'transfer\\s+to',
+    ]);
+    if (labeled) return labeled;
+
+    const subjectPatterns = [
+      /payment\s+receipt\s+to\s*\(([^)]+)\)/i,
+      /transfer\s+to\s+([A-Za-z0-9 .&'_-]{3,})/i,
+      /payment\s+to\s+([A-Za-z0-9 .&'_-]{3,})/i,
+    ];
+    for (const pattern of subjectPatterns) {
+      const match = subject.match(pattern);
+      if (match?.[1]) return match[1].trim();
+    }
+
+    return undefined;
   }
 
   private normalizeTransactionType(value: string | undefined): TransactionTypeEnum {

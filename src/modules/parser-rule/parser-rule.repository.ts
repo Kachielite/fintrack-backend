@@ -1,8 +1,14 @@
 import { inject, injectable } from 'tsyringe';
 import { and, eq, inArray } from 'drizzle-orm';
 import Database from '@/common/lib/database';
-import { ParserRuleSchema, ParserTemplateSchema, TemplateRuleSchema } from './parser-rule.schema';
 import {
+  BankEmailBlueprintSchema,
+  ParserRuleSchema,
+  ParserTemplateSchema,
+  TemplateRuleSchema,
+} from './parser-rule.schema';
+import {
+  IBankEmailBlueprint,
   IParserRule,
   IParserTemplate,
   IParserTemplateWithRules,
@@ -20,6 +26,10 @@ export interface IParserRuleRepository {
   updateTemplateConfidence(id: number, matchCount: number, failCount: number): Promise<void>;
   updateTemplateLastFailed(id: number): Promise<void>;
   updateRuleStatus(id: number, status: RuleStatusEnum, notes?: string): Promise<void>;
+  findBlueprintByBankAndType(bankId: number, transactionType: string): Promise<IBankEmailBlueprint | null>;
+  findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]>;
+  createBlueprint(data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint>;
+  updateBlueprint(id: number, data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint>;
 }
 
 @injectable()
@@ -134,6 +144,63 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
       .update(ParserRuleSchema)
       .set(updateData)
       .where(eq(ParserRuleSchema.id, id));
+  }
+
+  async findBlueprintByBankAndType(
+    bankId: number,
+    transactionType: string,
+  ): Promise<IBankEmailBlueprint | null> {
+    const rows = await this.db.client
+      .select()
+      .from(BankEmailBlueprintSchema)
+      .where(
+        and(
+          eq(BankEmailBlueprintSchema.bankId, bankId),
+          eq(BankEmailBlueprintSchema.transactionType, transactionType),
+        ),
+      )
+      .limit(1);
+    return (rows[0] as IBankEmailBlueprint) ?? null;
+  }
+
+  async findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]> {
+    const rows = await this.db.client
+      .select()
+      .from(BankEmailBlueprintSchema)
+      .where(eq(BankEmailBlueprintSchema.bankId, bankId));
+    return rows as IBankEmailBlueprint[];
+  }
+
+  async createBlueprint(data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint> {
+    const [row] = await this.db.client
+      .insert(BankEmailBlueprintSchema)
+      .values({
+        bankId: data.bankId!,
+        transactionType: data.transactionType!,
+        sanitizedSubject: data.sanitizedSubject!,
+        sanitizedBody: data.sanitizedBody!,
+        formatSignature: data.formatSignature!,
+        sampleCount: data.sampleCount ?? 1,
+        driftCount: data.driftCount ?? 0,
+      })
+      .returning();
+    return row as IBankEmailBlueprint;
+  }
+
+  async updateBlueprint(id: number, data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint> {
+    const [row] = await this.db.client
+      .update(BankEmailBlueprintSchema)
+      .set({
+        sanitizedSubject: data.sanitizedSubject,
+        sanitizedBody: data.sanitizedBody,
+        formatSignature: data.formatSignature,
+        sampleCount: data.sampleCount,
+        driftCount: data.driftCount,
+        updatedAt: new Date(),
+      })
+      .where(eq(BankEmailBlueprintSchema.id, id))
+      .returning();
+    return row as IBankEmailBlueprint;
   }
 
   private async hydrateTemplates(
