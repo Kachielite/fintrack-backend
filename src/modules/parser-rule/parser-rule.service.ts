@@ -1,4 +1,5 @@
 import { inject, injectable } from 'tsyringe';
+import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
@@ -46,9 +47,19 @@ export interface IParserRuleService {
     emailSubject: string,
     emailBody: string,
   ): Promise<IdentifiedBank | null>;
+  captureBlueprint(
+    bankId: number,
+    transactionType: 'debit' | 'credit',
+    emailSubject: string,
+    emailBody: string,
+  ): Promise<void>;
   recordMatch(templateId: number): Promise<void>;
   recordFailure(templateId: number): Promise<void>;
 }
+
+const BLUEPRINT_BODY_MAX_LEN = 3000;
+const BLUEPRINT_SUBJECT_MAX_LEN = 240;
+const BLUEPRINT_DRIFT_REPLACE_THRESHOLD = 2;
 
 @injectable()
 class ParserRuleService implements IParserRuleService {
@@ -94,6 +105,7 @@ class ParserRuleService implements IParserRuleService {
         pattern: r.pattern,
         flags: r.flags,
       }));
+      const blueprintContext = await this.getBlueprintContext(template.bankId);
 
       const response = await this.openai.chat.completions.create({
         model: CONSTANTS.OPENAI_MODEL_AUDIT,
@@ -107,6 +119,9 @@ class ParserRuleService implements IParserRuleService {
             role: 'user',
             content: `Audit the following regex rules for a bank email parser:
 ${JSON.stringify(rulesJson, null, 2)}
+
+Known bank blueprint samples (sanitized):
+${blueprintContext}
 
 For each rule, assess:
 1. Is it correct and captures the right group?
@@ -186,6 +201,8 @@ Return JSON only in this exact format:
       const templates = await this.repository.findProductionTemplatesByBank(bankId);
       if (templates.length === 0) return null;
 
+      let bestMatch: { templateId: number; parsed: ParsedTransaction; score: number; matchedCount: number } | null = null;
+
       for (const template of templates) {
         if (template.emailSubjectPattern) {
           try {
@@ -196,7 +213,8 @@ Return JSON only in this exact format:
         }
 
         const result: ParsedTransaction = {};
-        let allMatched = true;
+        let matchedCount = 0;
+        let requiredMatched = false;
 
         for (const rule of template.rules) {
           try {
@@ -205,24 +223,40 @@ Return JSON only in this exact format:
             const match = regex.exec(emailBody);
             if (match && match[rule.extractGroup]) {
               const value = match[rule.extractGroup].trim();
-              (result as any)[rule.field] = this.parseFieldValue(rule.field as RuleFieldEnum, value);
-            } else {
-              allMatched = false;
+              this.assignParsedField(
+                result,
+                rule.field as RuleFieldEnum,
+                this.parseFieldValue(rule.field as RuleFieldEnum, value),
+              );
+              matchedCount++;
+              if (rule.field === RuleFieldEnum.AMOUNT) requiredMatched = true;
             }
           } catch (ruleErr) {
             logger.warn(`Skipping bad regex rule ${rule.id} for bank ${bankId}: ${ruleErr}`);
-            allMatched = false;
           }
         }
 
-        if (allMatched && Object.keys(result).length > 0) {
-          return {
+        const minMatched = template.rules.length <= 1 ? 1 : 2;
+        if (!requiredMatched || matchedCount < minMatched || Object.keys(result).length === 0) {
+          continue;
+        }
+
+        const score = matchedCount / Math.max(template.rules.length, 1);
+        if (!bestMatch || score > bestMatch.score || (score === bestMatch.score && matchedCount > bestMatch.matchedCount)) {
+          bestMatch = {
             templateId: template.id,
             parsed: result,
+            score,
+            matchedCount,
           };
         }
       }
-      return null;
+
+      if (!bestMatch) return null;
+      return {
+        templateId: bestMatch.templateId,
+        parsed: bestMatch.parsed,
+      };
     } catch (error) {
       logger.error(`Error applying template for bank ${bankId} - ${error}`);
       return null;
@@ -354,6 +388,7 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
     emailSubject: string,
   ): Promise<IParserTemplate> {
     try {
+      const blueprintContext = await this.getBlueprintContext(bankId);
       const response = await this.openai.chat.completions.create({
         model: CONSTANTS.OPENAI_MODEL_TEMPLATE,
         messages: [
@@ -369,6 +404,9 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
 Subject: ${emailSubject}
 Body:
 ${emailBody.substring(0, 3000)}
+
+Known bank blueprint samples (sanitized):
+${blueprintContext}
 
 IMPORTANT: Use JavaScript regex syntax only.
 - Do NOT use inline flags like (?i), (?m) — these are not supported in JavaScript.
@@ -491,6 +529,66 @@ country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
     }
   }
 
+  async captureBlueprint(
+    bankId: number,
+    transactionType: 'debit' | 'credit',
+    emailSubject: string,
+    emailBody: string,
+  ): Promise<void> {
+    try {
+      const sanitizedSubject = this.sanitizeBlueprintText(emailSubject, BLUEPRINT_SUBJECT_MAX_LEN);
+      const sanitizedBody = this.sanitizeBlueprintText(emailBody, BLUEPRINT_BODY_MAX_LEN);
+      if (!sanitizedBody) return;
+
+      const formatSignature = this.buildFormatSignature(sanitizedSubject, sanitizedBody);
+      const existing = await this.repository.findBlueprintByBankAndType(bankId, transactionType);
+      if (!existing) {
+        await this.repository.createBlueprint({
+          bankId,
+          transactionType,
+          sanitizedSubject,
+          sanitizedBody,
+          formatSignature,
+          sampleCount: 1,
+          driftCount: 0,
+        });
+        return;
+      }
+
+      if (existing.formatSignature === formatSignature) {
+        await this.repository.updateBlueprint(existing.id, {
+          sampleCount: existing.sampleCount + 1,
+          driftCount: 0,
+        });
+        return;
+      }
+
+      const nextDriftCount = existing.driftCount + 1;
+      if (nextDriftCount >= BLUEPRINT_DRIFT_REPLACE_THRESHOLD) {
+        await this.repository.updateBlueprint(existing.id, {
+          sanitizedSubject,
+          sanitizedBody,
+          formatSignature,
+          sampleCount: 1,
+          driftCount: 0,
+        });
+        logger.info(
+          `[ParserRule] Replaced ${transactionType} blueprint for bank ${bankId} after detecting format drift`,
+        );
+        return;
+      }
+
+      await this.repository.updateBlueprint(existing.id, {
+        sampleCount: existing.sampleCount + 1,
+        driftCount: nextDriftCount,
+      });
+    } catch (error) {
+      logger.error(
+        `[ParserRule] Failed to capture ${transactionType} blueprint for bank ${bankId} - ${error}`,
+      );
+    }
+  }
+
   private isRateLimitError(error: unknown): boolean {
     const e = error as { status?: number; message?: string };
     return e?.status === 429 || (e?.message || '').includes('429');
@@ -541,6 +639,67 @@ country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
       return parseFloat(value.replace(/,/g, ''));
     }
     return value;
+  }
+
+  private assignParsedField(
+    result: ParsedTransaction,
+    field: RuleFieldEnum,
+    value: string | number,
+  ): void {
+    if (field === RuleFieldEnum.TRANSACTION_TYPE) {
+      result.transactionType = String(value);
+      return;
+    }
+    (result as any)[field] = value;
+  }
+
+  private async getBlueprintContext(bankId: number): Promise<string> {
+    try {
+      const blueprints = await this.repository.findBlueprintsByBank(bankId);
+      if (blueprints.length === 0) return 'none';
+
+      return blueprints
+        .map(
+          (bp) =>
+            `- ${bp.transactionType.toUpperCase()} subject: ${bp.sanitizedSubject}\n` +
+            `  ${bp.transactionType.toUpperCase()} body:\n${bp.sanitizedBody.substring(0, 1200)}`,
+        )
+        .join('\n\n');
+    } catch (error) {
+      logger.warn(`[ParserRule] Blueprint context unavailable for bank ${bankId} - ${error}`);
+      return 'none';
+    }
+  }
+
+  private sanitizeBlueprintText(input: string, maxLen: number): string {
+    const normalized = (input || '')
+      .replace(/\r/g, '')
+      .replace(/\t/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    const redacted = normalized
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '<EMAIL>')
+      .replace(/\b\d{10,}\b/g, '<LONG_NUMBER>')
+      .replace(/\b\d{4}[*xX]+\d{2,}\b/g, '<MASKED_ACCOUNT>')
+      .replace(/\b(?:acct|account)\s*(?:number|no\.?|num)?\s*[:#-]?\s*\d+[A-Z0-9*X-]*/gi, 'account <ACCOUNT>')
+      .replace(/\b(?:ref(?:erence)?|rrn|session\s*id|document\s*number)\s*[:#-]?\s*[A-Z0-9/-]{6,}\b/gi, 'reference <REFERENCE>');
+
+    return redacted.length > maxLen ? redacted.slice(0, maxLen) : redacted;
+  }
+
+  private buildFormatSignature(subject: string, body: string): string {
+    const labelMatches = Array.from(body.matchAll(/(^|\n)\s*([A-Za-z][A-Za-z\s]{2,40})\s*:/g))
+      .map((m) => m[2].toLowerCase().replace(/\s+/g, ' ').trim())
+      .slice(0, 40)
+      .join('|');
+    const normalizedSubject = subject
+      .toLowerCase()
+      .replace(/\d+/g, '<N>')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const fingerprint = `${normalizedSubject}::${labelMatches}`;
+    return createHash('sha256').update(fingerprint).digest('hex');
   }
 
   private mapToDTO(t: IParserTemplate): ParserTemplateResponseDTO {

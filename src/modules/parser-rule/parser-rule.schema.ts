@@ -1,4 +1,4 @@
-import { integer, pgTable, real, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { integer, pgTable, real, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { BankSchema } from '@/modules/bank/bank.schema';
 
 export const ParserRuleSchema = pgTable('parser_rules', {
@@ -49,3 +49,27 @@ export const TemplateRuleSchema = pgTable('template_rules', {
     .references(() => ParserRuleSchema.id, { onDelete: 'cascade' })
     .notNull(),
 });
+
+export const BankEmailBlueprintSchema = pgTable(
+  'bank_email_blueprints',
+  {
+    id: serial('id').primaryKey(),
+    bankId: integer('bank_id')
+      .references(() => BankSchema.id, { onDelete: 'cascade' })
+      .notNull(),
+    transactionType: text('transaction_type').notNull(),
+    sanitizedSubject: text('sanitized_subject').notNull(),
+    sanitizedBody: text('sanitized_body').notNull(),
+    formatSignature: text('format_signature').notNull(),
+    sampleCount: integer('sample_count').default(1).notNull(),
+    driftCount: integer('drift_count').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    uniqBankType: uniqueIndex('bank_email_blueprints_bank_type_uniq').on(
+      table.bankId,
+      table.transactionType,
+    ),
+  }),
+);

@@ -40,6 +40,19 @@ export interface IParserTemplateWithRules extends IParserTemplate {
   rules: IParserRule[];
 }
 
+export interface IBankEmailBlueprint {
+  id: number;
+  bankId: number;
+  transactionType: string;
+  sanitizedSubject: string;
+  sanitizedBody: string;
+  formatSignature: string;
+  sampleCount: number;
+  driftCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface ParsedTransaction {
   amount?: number;
   currency?: string;
