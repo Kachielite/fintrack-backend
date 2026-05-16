@@ -17,6 +17,7 @@ import NotificationService, { INotificationService } from '@/modules/notificatio
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
+import { IBank } from '@/modules/bank/bank.interface';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -244,10 +245,18 @@ class IngestionService implements IIngestionService {
       const transactionSignal = this.getTransactionSignal(emailBody, emailSubject);
       const bankMatch = await this.bankRepository.findBySenderEmail(senderEmail);
       let bank = bankMatch?.bank ?? null;
+      const domainHintBank = bank ? null : await this.findBankByDomainHint(senderEmail);
 
       if (bankMatch) {
         logger.info(
           `[Bank] ${bankMatch.source}: matched "${bank!.name}" from ${senderEmail}, messageId=${messageId}`,
+        );
+      }
+
+      if (!bank && domainHintBank) {
+        bank = domainHintBank;
+        logger.info(
+          `[Bank] domain_name_hint: matched "${bank.name}" from ${senderEmail}, messageId=${messageId}`,
         );
       }
 
@@ -293,15 +302,28 @@ class IngestionService implements IIngestionService {
           return false;
         }
 
-        logger.info(
-          `[Bank] ai_identified: "${identified.name}" from ${senderEmail} — registering, messageId=${messageId}`,
-        );
-        bank = await this.bankRepository.upsertByShortCode({
-          name: identified.name,
-          shortCode: identified.shortCode,
-          country: identified.country,
-          senderEmail,
-        });
+        if (domainHintBank && domainHintBank.shortCode !== identified.shortCode) {
+          logger.warn(
+            `[Bank] AI/domain mismatch for ${senderEmail}: ai=${identified.shortCode}, domain_hint=${domainHintBank.shortCode}; using domain hint`,
+          );
+          bank = domainHintBank;
+        }
+
+        if (bank) {
+          logger.info(
+            `[Bank] domain_name_hint: selected "${bank.name}" from ${senderEmail}, messageId=${messageId}`,
+          );
+        } else {
+          logger.info(
+            `[Bank] ai_identified: "${identified.name}" from ${senderEmail} — registering, messageId=${messageId}`,
+          );
+          bank = await this.bankRepository.upsertByShortCode({
+            name: identified.name,
+            shortCode: identified.shortCode,
+            country: identified.country,
+            senderEmail,
+          });
+        }
       }
 
       if (!transactionSignal.isTransaction && !bank) {
@@ -332,7 +354,11 @@ class IngestionService implements IIngestionService {
         const normalizedType = this.normalizeTransactionType(regexResult.transactionType);
         const parsedAmount = Number(regexResult.amount ?? 0);
         const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-        const transactionDate = this.parseTransactionDate(regexResult.date);
+        const transactionDate = this.resolveTransactionDate(
+          regexResult.date,
+          emailBody,
+          emailSubject,
+        );
         const merchant = this.resolveMerchant(
           (regexResult.merchant as string) || undefined,
           emailBody,
@@ -458,7 +484,11 @@ class IngestionService implements IIngestionService {
         emailBody,
         emailSubject,
       );
-      const extractedDate = this.parseTransactionDate(extractedOrFallback.date);
+      const extractedDate = this.resolveTransactionDate(
+        extractedOrFallback.date,
+        emailBody,
+        emailSubject,
+      );
       const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
         userId,
         merchant,
@@ -605,6 +635,7 @@ class IngestionService implements IIngestionService {
     const beneficiaryRaw = this.extractFieldValue(combined, ['beneficiary\\s+name']);
     const dateRaw = this.extractFieldValue(combined, [
       'transaction\\s+date\\s*&\\s*time',
+      'transaction\\s+date',
       'value\\s+date',
       'time\\s+of\\s+transaction',
       'effective\\s+date',
@@ -640,7 +671,14 @@ class IngestionService implements IIngestionService {
       'transaction\\s+date',
       'time\\s+of\\s+transaction',
       'value\\s+date',
+      'effective\\s+date',
+      'date\\s+of\\s+transaction',
       'your\\s+branch',
+      'remember',
+      'thank\\s+you\\s+for\\s+banking',
+      'if\\s+you\\s+need\\s+assistance',
+      'do\\s+not\\s+respond\\s+to\\s+emails',
+      'support@[a-z0-9._%+-]+\\.[a-z]{2,}',
       'how\\s+did\\s+you\\s+feel',
       'this\\s+is\\s+an\\s+online\\s+auto\\s+generated',
     ];
@@ -672,10 +710,17 @@ class IngestionService implements IIngestionService {
       'Transaction Reference',
       'Account Number',
       'Transaction Date',
+      'Date of Transaction',
+      'Effective Date',
       'Your Branch',
       'How did you feel',
       'This is an online auto generated',
       'Please note that this transaction',
+      'If you need assistance',
+      'Do not respond to emails',
+      'Thank you for Banking with us',
+      'Remember: Keep your card and Pin information secure',
+      'support@',
     ];
     for (const phrase of stopPhrases) {
       const idx = text.toLowerCase().indexOf(phrase.toLowerCase());
@@ -685,8 +730,10 @@ class IngestionService implements IIngestionService {
     }
 
     text = text
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '')
       .replace(/^\d{12,}\s+/i, '')
       .replace(/\bHEAD OFFICE BRANCH\b[\s\S]*$/i, '')
+      .replace(/\b(if\s+you\s+need\s+assistance|thank\s+you\s+for\s+banking|remember:)\b[\s\S]*$/i, '')
       .replace(/[\-,:;]+$/g, '')
       .trim();
 
@@ -770,6 +817,100 @@ class IngestionService implements IIngestionService {
     if (!value) return new Date();
     const parsed = new Date(value);
     return isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+
+  private resolveTransactionDate(value: string | undefined, body: string, subject: string): Date {
+    const primary = this.parseDateCandidate(value);
+    if (primary && !this.isMidnight(primary, value)) return primary;
+
+    const combined = `${subject}\n${body}`;
+    const labeled = this.extractFieldValue(combined, [
+      'transaction\\s+date\\s*&\\s*time',
+      'time\\s+of\\s+transaction',
+      'effective\\s+date',
+      'date\\s+of\\s+transaction',
+      'transaction\\s+date',
+      'value\\s+date',
+    ]);
+    const labeledDate = this.parseDateCandidate(labeled);
+    if (labeledDate) return labeledDate;
+
+    const looseMatch = combined.match(
+      /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/,
+    )?.[0];
+    const looseDate = this.parseDateCandidate(looseMatch);
+    if (looseDate) return looseDate;
+
+    if (primary) return primary;
+    return new Date();
+  }
+
+  private parseDateCandidate(raw: string | undefined): Date | null {
+    if (!raw) return null;
+    const cleaned = raw.replace(/\./g, '').trim();
+    if (!cleaned) return null;
+
+    const parsed = new Date(cleaned);
+    if (!isNaN(parsed.getTime())) return parsed;
+
+    const slash = cleaned.match(
+      /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+    );
+    if (!slash) return null;
+
+    let day = Number(slash[1]);
+    let month = Number(slash[2]);
+    const yearRaw = Number(slash[3]);
+    const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+    const hour = Number(slash[4] ?? 0);
+    const minute = Number(slash[5] ?? 0);
+    const second = Number(slash[6] ?? 0);
+
+    // Default to day-first for common NG bank formats.
+    if (day <= 12 && month > 12) {
+      const temp = day;
+      day = month;
+      month = temp;
+    }
+
+    const normalized = new Date(year, month - 1, day, hour, minute, second);
+    return isNaN(normalized.getTime()) ? null : normalized;
+  }
+
+  private isMidnight(parsed: Date, raw: string | undefined): boolean {
+    if (!raw) return false;
+    const hasTimeInRaw = /\d{1,2}:\d{2}/.test(raw);
+    if (hasTimeInRaw) return false;
+    return (
+      parsed.getHours() === 0 &&
+      parsed.getMinutes() === 0 &&
+      parsed.getSeconds() === 0 &&
+      parsed.getMilliseconds() === 0
+    );
+  }
+
+  private async findBankByDomainHint(senderEmail: string): Promise<IBank | null> {
+    const at = senderEmail.lastIndexOf('@');
+    if (at < 0 || at === senderEmail.length - 1) return null;
+    const domain = senderEmail.slice(at + 1).toLowerCase();
+    const root = domain.replace(/^mail\./, '').replace(/^m\./, '');
+    const compactDomain = root.replace(/[^a-z0-9]/g, '');
+    if (!compactDomain) return null;
+
+    const banks = await this.bankRepository.findAll();
+    const ignored = new Set(['bank', 'plc', 'ltd', 'limited', 'nigeria', 'ng', 'group']);
+    const matches = banks.filter((bank) => {
+      const tokens = [bank.shortCode, bank.name]
+        .join(' ')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 4 && !ignored.has(t));
+      return tokens.some((token) => compactDomain.includes(token));
+    });
+
+    if (matches.length === 1) return matches[0] ?? null;
+    return null;
   }
 
   private async getCachedCategories(): Promise<ICategory[]> {

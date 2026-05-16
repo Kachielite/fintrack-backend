@@ -338,7 +338,7 @@ Return JSON:
   "merchant": "<clean merchant or recipient name>",
   "transaction_type": "debit" | "credit",
   "category": "peer_to_peer_transfer" | "business_payment" | "subscriptions" | "entertainment_leisure" | "mobile_internet" | "utilities" | "groceries" | "retail_ecommerce" | "dining_food_delivery" | "transport" | "fuel_auto" | "travel" | "bank_charges" | "currency_conversion" | "salary_wages" | "refunds_reimbursements" | "healthcare" | "education" | "charity_donations" | "cash_withdrawal" | "uncategorized",
-  "transaction_date": "<date in YYYY-MM-DD format extracted from the email body, or null if not found>",
+  "transaction_date": "<transaction datetime in ISO 8601 (YYYY-MM-DDTHH:mm:ss) when available; otherwise YYYY-MM-DD; null if not found>",
   "balance": <account balance number after transaction, or null>,
   "reference": "<transaction reference/ID if present, else null>"
 }
@@ -498,6 +498,11 @@ Body (first 600 chars): ${emailBody.substring(0, 600)}
 Is this a bank transaction notification email? If yes, identify the bank.
 Return: { "is_bank": true, "bank_name": "Full Name", "short_code": "lowercase_id", "country": "ISO2" }
 If not a bank email, return: { "is_bank": false }
+
+Rules:
+- Treat sender domain as the strongest signal of bank identity (e.g. *@stanbicibtc.com => Stanbic IBTC).
+- Do not infer another bank from body wording if sender domain strongly indicates a different bank.
+- If sender domain is generic/unknown and body is ambiguous, return { "is_bank": false }.
 
 short_code: lowercase alphanumeric slug (e.g. "gtbank", "access", "zenith").
 country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
