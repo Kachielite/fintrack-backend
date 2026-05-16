@@ -6,7 +6,7 @@ import {
   TransactionQueryDTO,
   BulkCategoryDTO,
 } from './transaction.dto';
-import { TransactionStatusEnum, CategoryEnum } from './transaction.enum';
+import { TransactionStatusEnum } from './transaction.enum';
 import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import { IGeneralResponse, IPagination } from '@/common/types/interface';

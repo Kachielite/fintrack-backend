@@ -16,6 +16,7 @@
     "seed:admin": "ts-node -r tsconfig-paths/register scripts/seed-admin.ts",
     "seed:banks": "ts-node -r tsconfig-paths/register scripts/seed-banks.ts",
     "db:reset": "ts-node -r tsconfig-paths/register scripts/reset-db.ts && drizzle-kit push --config=drizzle.config.ts && ts-node -r tsconfig-paths/register scripts/seed-banks.ts && ts-node -r tsconfig-paths/register scripts/seed-admin.ts",
+    "seed:categories": "ts-node -r tsconfig-paths/register scripts/seed-categories.ts",
     "seed:demo": "ts-node -r tsconfig-paths/register scripts/seed-demo.ts",
     "test:bank-matching": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/bank-matching.test.ts"
   },
