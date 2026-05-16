@@ -801,10 +801,17 @@ class IngestionService implements IIngestionService {
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<[^>]+>/g, ' ')
+      // named entities
       .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
+      // numeric entities — replace with space so currency symbols (e.g. &#8358; = NGN)
+      // don't block amount-pattern matching downstream
+      .replace(/&#x[0-9a-fA-F]+;/g, ' ')
+      .replace(/&#\d+;/g, ' ')
+      // any remaining named entities we don't recognise
+      .replace(/&[a-zA-Z]{2,8};/g, ' ')
       .replace(/\s{2,}/g, ' ')
       .trim();
   }
