@@ -19,6 +19,8 @@ export interface INotificationService {
 
 @injectable()
 class NotificationService implements INotificationService {
+  private hasWarnedMissingDeviceTokensTable = false;
+
   constructor(
     @inject('INotificationRepository') private repo: INotificationRepository,
   ) {}
@@ -83,8 +85,22 @@ class NotificationService implements INotificationService {
       if (playerIds.length === 0) return;
       await sendPushNotification(playerIds, title, body, data);
     } catch (error) {
+      if (this.isMissingDeviceTokensTableError(error)) {
+        if (!this.hasWarnedMissingDeviceTokensTable) {
+          this.hasWarnedMissingDeviceTokensTable = true;
+          logger.warn('[Push] device_tokens table is missing. Run DB migrations to enable push notifications.');
+        }
+        return;
+      }
       logger.warn(`[Push] Dispatch failed for user ${userId}: ${error}`);
     }
+  }
+
+  private isMissingDeviceTokensTableError(error: unknown): boolean {
+    const err = error as { code?: string; message?: string };
+    if (err?.code === '42P01') return true;
+    const msg = String(err?.message || '').toLowerCase();
+    return msg.includes('relation') && msg.includes('device_tokens') && msg.includes('does not exist');
   }
 }
 
