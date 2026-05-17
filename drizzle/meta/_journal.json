@@ -36,6 +36,34 @@
       "when": 1778760000000,
       "tag": "0004_demo_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778846400000,
+      "tag": "0005_known_sender_domains",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778932800000,
+      "tag": "0006_categories_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779019200000,
+      "tag": "0007_bank_email_blueprints",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779105600000,
+      "tag": "0008_device_tokens",
+      "breakpoints": true
     }
   ]
 }
