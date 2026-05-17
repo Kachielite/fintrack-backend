@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { eq, and, isNotNull } from 'drizzle-orm';
+import { asc, eq, and, isNotNull } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { CategorySchema } from './category.schema';
 import { ICategory } from './category.interface';
@@ -35,7 +35,8 @@ class CategoryRepositoryImpl implements ICategoryRepository {
     return (await this.db.client
       .select()
       .from(CategorySchema)
-      .where(and(eq(CategorySchema.isActive, true), isNotNull(CategorySchema.regex)))) as ICategory[];
+      .where(and(eq(CategorySchema.isActive, true), isNotNull(CategorySchema.regex)))
+      .orderBy(asc(CategorySchema.id))) as ICategory[];
   }
 }
 
