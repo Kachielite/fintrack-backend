@@ -44,7 +44,7 @@ interface TransactionSignal {
 
 interface CategoryResolution {
   category: string;
-  source: 'learned' | 'regex_rule' | 'extracted' | 'default_uncategorized';
+  source: 'learned' | 'regex_rule' | 'extracted' | 'ai_fallback' | 'default_uncategorized';
   matchedRule?: string;
   verified: boolean;
 }
@@ -366,7 +366,7 @@ class IngestionService implements IIngestionService {
           userId,
           merchant,
         );
-        const categoryResolution = this.resolveCategory(
+        const categoryResolution = await this.resolveCategory(
           merchant,
           emailSubject,
           emailBody,
@@ -489,7 +489,7 @@ class IngestionService implements IIngestionService {
         userId,
         merchant,
       );
-      const categoryResolution = this.resolveCategory(
+      const categoryResolution = await this.resolveCategory(
         merchant,
         emailSubject,
         emailBody,
@@ -1011,25 +1011,21 @@ class IngestionService implements IIngestionService {
     return categories;
   }
 
-  private resolveCategory(
+  private async resolveCategory(
     merchant: string,
-    subject: string,
+    _subject: string,
     body: string,
     categories: ICategory[],
     extractedCategory?: string,
     learnedCategory?: string | null,
-  ): CategoryResolution {
+  ): Promise<CategoryResolution> {
     if (learnedCategory) {
       return { category: learnedCategory, source: 'learned', verified: true };
     }
 
-    // Test DB category regex against merchant name + email subject.
-    // The subject is short and transaction-specific (e.g. "FCY Conversion Alert",
-    // "Debit from Glovo") and adds useful context without the noise of the full body.
-    // Categories are ordered by id (seed insertion order) so specific patterns are
-    // evaluated before broader catch-all ones.
-    const matchTarget = `${merchant} ${subject}`.toLowerCase();
-    for (const cat of categories) {
+    const matchTarget = this.buildCategoryMatchTarget(merchant, body);
+    const categoriesOrdered = this.orderCategoriesForRegex(categories);
+    for (const cat of categoriesOrdered) {
       if (!cat.regex) continue;
       try {
         const pattern = new RegExp(cat.regex, 'i');
@@ -1042,13 +1038,53 @@ class IngestionService implements IIngestionService {
     }
 
     if (extractedCategory) {
-      const maybeSlug = extractedCategory.toLowerCase().trim();
+      const maybeSlug = this.normalizeKnownCategorySlug(extractedCategory, categories);
       if (maybeSlug) {
         return { category: maybeSlug, source: 'extracted', verified: false };
       }
     }
 
+    const aiCategory = await this.parserRuleService.inferCategoryFromText(
+      merchant,
+      matchTarget,
+      categories.map((c) => c.slug),
+    );
+    if (aiCategory) {
+      return { category: aiCategory, source: 'ai_fallback', verified: false };
+    }
+
     return { category: CategoryEnum.UNCATEGORIZED, source: 'default_uncategorized', verified: false };
+  }
+
+  private buildCategoryMatchTarget(merchant: string, body: string): string {
+    const detail = this.extractFieldValue(body, [
+      'description',
+      'narration',
+      'beneficiary\\s+name',
+      'merchant',
+      'payment\\s+to',
+      'transfer\\s+to',
+    ]);
+    const merged = [merchant, detail]
+      .filter((v) => !!v)
+      .join(' ')
+      .trim();
+    return merged.toLowerCase();
+  }
+
+  private orderCategoriesForRegex(categories: ICategory[]): ICategory[] {
+    const peerSlug = CategoryEnum.PEER_TO_PEER_TRANSFER;
+    return [...categories].sort((a, b) => {
+      if (a.slug === peerSlug && b.slug !== peerSlug) return 1;
+      if (b.slug === peerSlug && a.slug !== peerSlug) return -1;
+      return a.id - b.id;
+    });
+  }
+
+  private normalizeKnownCategorySlug(slug: string, categories: ICategory[]): string | null {
+    const normalized = slug.toLowerCase().trim();
+    if (!normalized) return null;
+    return categories.some((c) => c.slug === normalized) ? normalized : null;
   }
 
   private extractEmail(from: string): string {

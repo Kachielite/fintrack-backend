@@ -80,6 +80,11 @@ export interface IParserRuleService {
     emailSubject: string,
     emailBody: string,
   ): Promise<IdentifiedBank | null>;
+  inferCategoryFromText(
+    merchant: string,
+    description: string,
+    allowedCategories: string[],
+  ): Promise<string | null>;
   captureBlueprint(
     bankId: number,
     transactionType: 'debit' | 'credit',
@@ -663,6 +668,65 @@ country: ISO 3166-1 alpha-2 (e.g. "NG", "GB", "US").`,
         return null;
       }
       logger.error(`Error identifying bank from email ${senderEmail} - ${error}`);
+      return null;
+    }
+  }
+
+  async inferCategoryFromText(
+    merchant: string,
+    description: string,
+    allowedCategories: string[],
+  ): Promise<string | null> {
+    try {
+      const allowed = Array.from(new Set(allowedCategories.map((s) => s.toLowerCase().trim()).filter(Boolean)));
+      if (allowed.length === 0) return null;
+
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_CLASSIFY,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You classify a financial transaction category from merchant/description text. Return JSON only.',
+          },
+          {
+            role: 'user',
+            content: `Merchant: ${merchant || 'unknown'}
+Description: ${description || 'unknown'}
+
+Allowed category slugs:
+${allowed.join(', ')}
+
+Return JSON in this format:
+{ "category": "<one allowed slug>" }
+
+If none confidently matches, return:
+{ "category": null }`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'infer_category',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL_CLASSIFY,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      const category = String(raw.category || '').toLowerCase().trim();
+      if (!category) return null;
+      return allowed.includes(category) ? category : null;
+    } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn('Rate-limited while inferring category from merchant/description');
+        return null;
+      }
+      logger.error(`Error inferring category from merchant/description - ${error}`);
       return null;
     }
   }
