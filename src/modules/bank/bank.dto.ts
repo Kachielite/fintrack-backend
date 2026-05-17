@@ -10,3 +10,9 @@ export const BankResponseSchema = z.object({
   is_active: z.boolean(),
 });
 export type BankResponseDTO = z.infer<typeof BankResponseSchema>;
+
+export const ReportSenderSchema = z.object({
+  sender_email: z.string().email('Must be a valid email address'),
+  bank_name: z.string().min(2).max(100).optional(),
+});
+export type ReportSenderDTO = z.infer<typeof ReportSenderSchema>;

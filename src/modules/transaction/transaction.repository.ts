@@ -54,7 +54,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
         exchangeRateUsed: data.exchangeRateUsed,
         transactionDate: data.transactionDate,
         status: data.status,
-        originalMerchant: data.merchant,
+        originalMerchant: data.originalMerchant ?? data.merchant,
         originalCategory: data.category,
         reference: data.reference,
         balance: data.balance,

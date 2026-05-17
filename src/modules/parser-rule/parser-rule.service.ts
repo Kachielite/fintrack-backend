@@ -16,6 +16,30 @@ import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 
+const DEFAULT_CATEGORIES = [
+  { slug: 'peer_to_peer_transfer', name: 'Peer-to-Peer Transfer', regex: null },
+  { slug: 'business_payment', name: 'Business Payment', regex: null },
+  { slug: 'subscriptions', name: 'Subscriptions', regex: null },
+  { slug: 'entertainment_leisure', name: 'Entertainment & Leisure', regex: null },
+  { slug: 'mobile_internet', name: 'Mobile & Internet', regex: null },
+  { slug: 'utilities', name: 'Utilities', regex: null },
+  { slug: 'groceries', name: 'Groceries', regex: null },
+  { slug: 'retail_ecommerce', name: 'Retail & E-Commerce', regex: null },
+  { slug: 'dining_food_delivery', name: 'Dining & Food Delivery', regex: null },
+  { slug: 'transport', name: 'Transport', regex: null },
+  { slug: 'fuel_auto', name: 'Fuel & Auto', regex: null },
+  { slug: 'travel', name: 'Travel', regex: null },
+  { slug: 'bank_charges', name: 'Bank Charges', regex: null },
+  { slug: 'currency_conversion', name: 'Currency Conversion', regex: null },
+  { slug: 'salary_wages', name: 'Salary & Wages', regex: null },
+  { slug: 'refunds_reimbursements', name: 'Refunds & Reimbursements', regex: null },
+  { slug: 'healthcare', name: 'Healthcare', regex: null },
+  { slug: 'education', name: 'Education', regex: null },
+  { slug: 'charity_donations', name: 'Charity & Donations', regex: null },
+  { slug: 'cash_withdrawal', name: 'Cash Withdrawal', regex: null },
+  { slug: 'uncategorized', name: 'Uncategorized', regex: null },
+];
+
 export interface IdentifiedBank {
   name: string;
   shortCode: string;
@@ -44,6 +68,7 @@ export interface IParserRuleService {
     bankName: string,
     emailBody: string,
     emailSubject: string,
+    categories?: { slug: string; name: string; regex: string | null }[],
   ): Promise<ParsedTransaction | null>;
   generateTemplate(
     bankId: number,
@@ -349,8 +374,17 @@ Return JSON only in this exact format:
     bankName: string,
     emailBody: string,
     emailSubject: string,
+    categories?: { slug: string; name: string; regex: string | null }[],
   ): Promise<ParsedTransaction | null> {
     try {
+      const categoryList = (categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES)
+        .map((c) => `- ${c.slug}${c.name !== c.slug ? ` (${c.name})` : ''}${c.regex ? `: matches /${c.regex}/` : ''}`)
+        .join('\n');
+
+      const categorySlugs = (categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES)
+        .map((c) => `"${c.slug}"`)
+        .join(' | ');
+
       const response = await this.openai.chat.completions.create({
         model: CONSTANTS.OPENAI_MODEL_EXTRACTION,
         messages: [
@@ -377,33 +411,21 @@ MERCHANT NAME RULES — clean up raw payment processor strings:
 - Strip account/tracking IDs: trailing patterns like "_ZUFPAN177702590" or " *XF82KQPW"
 - Examples: "PWL*GLOVO NAIROBI KE" → "Glovo"; "SPOTIFY_ZUFPAN177702590" → "Spotify"; "WEB PYMT PADDLE.NET* ENHANCV LONDON GB" → "Enhancv"
 
-CATEGORY CLASSIFICATION — pick one:
-- peer_to_peer_transfer
-- business_payment
-- subscriptions
-- entertainment_leisure
-- mobile_internet
-- utilities
-- groceries
-- retail_ecommerce
-- dining_food_delivery
-- transport
-- fuel_auto
-- travel
-- bank_charges
-- currency_conversion
-- salary_wages
-- refunds_reimbursements
-- healthcare
-- education
-- charity_donations
-- cash_withdrawal
-- uncategorized
+CATEGORY CLASSIFICATION — choose the slug that best fits. Use the regex hints and known brand names to guide your choice:
+${categoryList}
 
-Rules:
-- use salary_wages for salary/payroll/interest-style credit inflows from bank narration
-- use refunds_reimbursements for refund/reversal/cashback credits
-- use peer_to_peer_transfer only for person-to-person transfer narration`,
+Brand → category hints:
+- Spotify, Netflix, Apple, YouTube Premium, JetBrains, GitHub, AWS, Vercel, Figma, Notion, Slack, 1Password → subscriptions
+- Glovo, Uber Eats, Bolt Food, Jumia Food, DoorDash, Deliveroo → dining_food_delivery
+- Uber, Bolt, inDrive, Taxify, Lyft → transport
+- Shoprite, Walmart, Tesco, Jumia, Amazon, Konga → groceries or retail_ecommerce
+- DSTV, GOtv, Showmax → entertainment_leisure
+- MTN, Airtel, Glo, 9mobile, Safaricom → mobile_internet
+- PHCN, EKEDC, IKEDC, AEDC, water bill → utilities
+- ATM withdrawal, cash out → cash_withdrawal
+- Salary, payroll, stipend credit → salary_wages
+- Reversal, refund, cashback → refunds_reimbursements
+- Transfer to/from a person's name → peer_to_peer_transfer`,
           },
           {
             role: 'user',
@@ -419,7 +441,7 @@ Return JSON:
   "currency": "<ISO 4217 code, e.g. NGN, USD, GBP, KES>",
   "merchant": "<clean merchant or recipient name>",
   "transaction_type": "debit" | "credit",
-  "category": "peer_to_peer_transfer" | "business_payment" | "subscriptions" | "entertainment_leisure" | "mobile_internet" | "utilities" | "groceries" | "retail_ecommerce" | "dining_food_delivery" | "transport" | "fuel_auto" | "travel" | "bank_charges" | "currency_conversion" | "salary_wages" | "refunds_reimbursements" | "healthcare" | "education" | "charity_donations" | "cash_withdrawal" | "uncategorized",
+  "category": ${categorySlugs},
   "transaction_date": "<transaction datetime in ISO 8601 (YYYY-MM-DDTHH:mm:ss) when available; otherwise YYYY-MM-DD; null if not found>",
   "balance": <account balance number after transaction, or null>,
   "reference": "<transaction reference/ID if present, else null>"

@@ -10,6 +10,7 @@ export interface IBudgetRepository {
   findAllActive(userId: number): Promise<IBudget[]>;
   update(id: number, userId: number, data: Partial<IBudget>): Promise<IBudget>;
   deactivate(id: number, userId: number): Promise<void>;
+  deleteAllForUser(userId: number): Promise<void>;
 }
 
 @injectable()
@@ -64,6 +65,12 @@ class BudgetRepositoryImpl implements IBudgetRepository {
       .update(BudgetSchema)
       .set({ isActive: false, updatedAt: new Date() })
       .where(and(eq(BudgetSchema.id, id), eq(BudgetSchema.userId, userId)));
+  }
+
+  async deleteAllForUser(userId: number): Promise<void> {
+    await this.db.client
+      .delete(BudgetSchema)
+      .where(eq(BudgetSchema.userId, userId));
   }
 }
 
