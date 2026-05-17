@@ -10,6 +10,8 @@ import logger from '@/common/lib/logger';
 import { IEmailConnectionRepository } from './email-connection.repository';
 import { IIngestionRepository } from '@/modules/ingestion/ingestion.repository';
 import { IConnectionStats } from '@/modules/ingestion/ingestion.interface';
+import { IBudgetRepository } from '@/modules/budget/budget.repository';
+import { IInsightRepository } from '@/modules/insight/insight.repository';
 import {
   GmailCallbackDTO,
   EmailConnectionResponseDTO,
@@ -53,6 +55,10 @@ class EmailConnectionService implements IEmailConnectionService {
     private connectionRepository: IEmailConnectionRepository,
     @inject('IIngestionRepository')
     private ingestionRepository: IIngestionRepository,
+    @inject('IBudgetRepository')
+    private budgetRepository: IBudgetRepository,
+    @inject('IInsightRepository')
+    private insightRepository: IInsightRepository,
   ) {}
 
   getAuthUrl(userId: number): string {
@@ -188,6 +194,10 @@ class EmailConnectionService implements IEmailConnectionService {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
       await this.ingestionRepository.deleteConnectionData(id);
+      await Promise.all([
+        this.budgetRepository.deleteAllForUser(userId),
+        this.insightRepository.deleteAllForUser(userId),
+      ]);
       return { success: true, message: 'Connection data deleted', data: null };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) throw error;

@@ -16,6 +16,7 @@ export interface IInsightRepository {
   markRead(id: number, userId: number): Promise<void>;
   hasRecentInsight(userId: number, type: string, since: Date): Promise<boolean>;
   deleteExpired(userId: number): Promise<void>;
+  deleteAllForUser(userId: number): Promise<void>;
 }
 
 @injectable()
@@ -89,6 +90,12 @@ class InsightRepositoryImpl implements IInsightRepository {
           lte(InsightSchema.expiresAt, now),
         ),
       );
+  }
+
+  async deleteAllForUser(userId: number): Promise<void> {
+    await this.db.client
+      .delete(InsightSchema)
+      .where(eq(InsightSchema.userId, userId));
   }
 }
 

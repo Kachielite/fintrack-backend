@@ -459,6 +459,7 @@ class IngestionService implements IIngestionService {
         bank.name,
         emailBody,
         emailSubject,
+        dbCategories,
       );
 
       const extractedOrFallback = extracted || this.extractStructuredFallback(emailBody, emailSubject);
@@ -785,6 +786,7 @@ class IngestionService implements IIngestionService {
     const trimmed = currency.trim();
     const symbolMap: Record<string, string> = {
       '₦': 'NGN',
+      'N': 'NGN',   // shorthand used by some Nigerian bank email templates
       '$': 'USD',
       '£': 'GBP',
       '€': 'EUR',
