@@ -3,6 +3,8 @@ import NotificationRepositoryImpl, { INotificationRepository } from './notificat
 import { INotification, ICreateNotification } from './notification.interface';
 import { mapNotificationToDto, NotificationResponseDto, UnreadCountDto } from './notification.dto';
 import { ResourceNotFoundException } from '@/common/exception';
+import { sendPushNotification } from '@/common/lib/push';
+import { IGeneralResponse } from '@/common/types/interface';
 import logger from '@/common/lib/logger';
 
 export interface INotificationService {
@@ -11,6 +13,8 @@ export interface INotificationService {
   markRead(id: number, userId: number): Promise<void>;
   markAllRead(userId: number): Promise<void>;
   getUnreadCount(userId: number): Promise<UnreadCountDto>;
+  registerDeviceToken(userId: number, playerId: string, platform?: string): Promise<IGeneralResponse<null>>;
+  removeDeviceToken(userId: number, playerId: string): Promise<IGeneralResponse<null>>;
 }
 
 @injectable()
@@ -19,15 +23,21 @@ class NotificationService implements INotificationService {
     @inject('INotificationRepository') private repo: INotificationRepository,
   ) {}
 
+  /**
+   * Saves an in-app notification, then dispatches a push to all of the user's
+   * registered devices. The push is fire-and-forget — it never blocks the caller.
+   */
   async create(data: ICreateNotification): Promise<INotification> {
     logger.info(`[Notification] Creating notification for user ${data.userId} (type=${data.type})`);
-    return this.repo.create(data);
+    const notification = await this.repo.create(data);
+    this.dispatchPush(data.userId, data.title, data.body, { type: data.type, ...(data.data ?? {}) }).catch(() => {});
+    return notification;
   }
 
   async list(userId: number): Promise<NotificationResponseDto[]> {
     logger.info(`[Notification] Listing notifications for user ${userId}`);
     const rows = await this.repo.findByUser(userId);
-    return rows.reverse().map(mapNotificationToDto); // newest first
+    return rows.reverse().map(mapNotificationToDto);
   }
 
   async markRead(id: number, userId: number): Promise<void> {
@@ -47,6 +57,34 @@ class NotificationService implements INotificationService {
     logger.info(`[Notification] Fetching unread count for user ${userId}`);
     const count = await this.repo.countUnread(userId);
     return { count };
+  }
+
+  async registerDeviceToken(userId: number, playerId: string, platform?: string): Promise<IGeneralResponse<null>> {
+    await this.repo.upsertDeviceToken(userId, playerId, platform);
+    logger.info(`[Push] Device token registered for user ${userId} (platform=${platform ?? 'unknown'})`);
+    return { success: true, message: 'Device token registered', data: null };
+  }
+
+  async removeDeviceToken(userId: number, playerId: string): Promise<IGeneralResponse<null>> {
+    await this.repo.removeDeviceToken(userId, playerId);
+    logger.info(`[Push] Device token removed for user ${userId}`);
+    return { success: true, message: 'Device token removed', data: null };
+  }
+
+  private async dispatchPush(
+    userId: number,
+    title: string,
+    body: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const tokens = await this.repo.findTokensByUser(userId);
+      const playerIds = tokens.map((t) => t.playerId);
+      if (playerIds.length === 0) return;
+      await sendPushNotification(playerIds, title, body, data);
+    } catch (error) {
+      logger.warn(`[Push] Dispatch failed for user ${userId}: ${error}`);
+    }
   }
 }
 

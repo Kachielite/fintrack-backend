@@ -14,6 +14,7 @@ import { IUserRepository } from '@/modules/user/user.repository';
 import { InternalServerException } from '@/common/exception';
 import ExchangeRateService from '@/modules/exchange-rate/exchange-rate.service';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
+import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 
 export interface IInsightService {
   listInsights(userId: number, query: InsightQueryDTO): Promise<IInsight[]>;
@@ -33,6 +34,7 @@ class InsightService implements IInsightService {
     @inject(ExchangeRateService) private exchangeRateService: IExchangeRateService,
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
+    @inject(NotificationService) private notificationService: INotificationService,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -211,6 +213,15 @@ Return JSON only.`,
 
       await this.insightRepository.deleteExpired(userId);
       logger.info(`Insights generated for user ${userId}`);
+
+      // Notify the user that new Iris insights are available.
+      this.notificationService.create({
+        userId,
+        type: 'insight_generated',
+        title: 'Iris has new insights for you',
+        body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
+        data: {},
+      }).catch(() => {});
     } catch (error) {
       logger.error(`Error generating insights for user ${userId} - ${error}`);
     }
