@@ -18,9 +18,12 @@ import { InternalServerException, ResourceNotFoundException } from '@/common/exc
 import logger from '@/common/lib/logger';
 import { BudgetPeriodEnum } from './budget.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
+import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 
 const SUGGESTION_CACHE_TTL = 24 * 60 * 60 * 1000;
 const suggestionCache = new Map<number, { data: any[]; cachedAt: number }>();
+// Throttle: tracks which budget alerts were already sent this period (resets on restart)
+const alertThrottle = new Set<string>();
 
 export interface IBudgetService {
   listBudgets(userId: number): Promise<BudgetWithProgressDTO[]>;
@@ -30,6 +33,7 @@ export interface IBudgetService {
   getBudgetDetail(id: number, userId: number): Promise<BudgetDetailDTO>;
   getBudgetSuggestions(userId: number): Promise<any[]>;
   autoGenerateBudgets(userId: number): Promise<AutoGenerateResultDTO>;
+  checkBudgetAlerts(userId: number): Promise<void>;
 }
 
 @injectable()
@@ -42,6 +46,7 @@ class BudgetService implements IBudgetService {
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('IBankRepository') private bankRepository: IBankRepository,
     @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
+    @inject(NotificationService) private notificationService: INotificationService,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -483,6 +488,62 @@ Return a JSON object: { "suggestions": [{ "category": string, "suggested_limit":
     } catch (error) {
       logger.error(`Error generating budget suggestions for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to generate budget suggestions');
+    }
+  }
+
+  async checkBudgetAlerts(userId: number): Promise<void> {
+    try {
+      const budgets = await this.budgetRepository.findAllActive(userId);
+      if (budgets.length === 0) return;
+
+      const now = new Date();
+
+      for (const budget of budgets) {
+        const periodStart =
+          budget.periodType === BudgetPeriodEnum.MONTHLY
+            ? new Date(now.getFullYear(), now.getMonth(), 1)
+            : new Date(now.getTime() - now.getDay() * 24 * 60 * 60 * 1000);
+
+        const periodKey =
+          budget.periodType === BudgetPeriodEnum.MONTHLY
+            ? `${now.getFullYear()}-${now.getMonth()}`
+            : `${now.getFullYear()}-W${now.getDay()}`;
+
+        const transactions = await this.transactionRepository.findForSummary(userId, periodStart, now);
+        const spent = transactions
+          .filter((t) => t.category === budget.category && t.amount < 0)
+          .reduce((acc, t) => acc + Math.abs(t.refAmount), 0);
+
+        const percentage = (spent / budget.limitAmount) * 100;
+
+        if (percentage >= 100) {
+          const key = `${budget.id}:${periodKey}:exceeded`;
+          if (!alertThrottle.has(key)) {
+            alertThrottle.add(key);
+            this.notificationService.create({
+              userId,
+              type: 'budget_exceeded',
+              title: `Budget exceeded — ${budget.category}`,
+              body: `You've gone over your ${budget.category} budget for this ${budget.periodType}. Time to review your spending.`,
+              data: { budgetId: budget.id, category: budget.category, percentage: Math.round(percentage) },
+            }).catch(() => {});
+          }
+        } else if (percentage >= 80) {
+          const key = `${budget.id}:${periodKey}:warning`;
+          if (!alertThrottle.has(key)) {
+            alertThrottle.add(key);
+            this.notificationService.create({
+              userId,
+              type: 'budget_warning',
+              title: `Heads up — ${budget.category} budget at ${Math.round(percentage)}%`,
+              body: `You've used ${Math.round(percentage)}% of your ${budget.category} budget this ${budget.periodType}. You're getting close.`,
+              data: { budgetId: budget.id, category: budget.category, percentage: Math.round(percentage) },
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn(`[Budget] checkBudgetAlerts failed for user ${userId}: ${error}`);
     }
   }
 
