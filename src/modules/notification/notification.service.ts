@@ -82,7 +82,10 @@ class NotificationService implements INotificationService {
     try {
       const tokens = await this.repo.findTokensByUser(userId);
       const playerIds = tokens.map((t) => t.playerId);
-      if (playerIds.length === 0) return;
+      if (playerIds.length === 0) {
+        logger.debug(`[Push] No device tokens registered for user ${userId} — skipping push`);
+        return;
+      }
       await sendPushNotification(playerIds, title, body, data);
     } catch (error) {
       if (this.isMissingDeviceTokensTableError(error)) {
