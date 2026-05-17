@@ -2,7 +2,8 @@ import { inject, injectable } from 'tsyringe';
 import { and, eq, isNull } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { NotificationSchema } from './notification.schema';
-import { INotification, ICreateNotification } from './notification.interface';
+import { DeviceTokenSchema } from './device-token.schema';
+import { INotification, ICreateNotification, IDeviceToken } from './notification.interface';
 
 export interface INotificationRepository {
   create(data: ICreateNotification): Promise<INotification>;
@@ -10,6 +11,10 @@ export interface INotificationRepository {
   markRead(id: number, userId: number): Promise<void>;
   markAllRead(userId: number): Promise<void>;
   countUnread(userId: number): Promise<number>;
+  // Device tokens
+  upsertDeviceToken(userId: number, playerId: string, platform?: string): Promise<void>;
+  findTokensByUser(userId: number): Promise<IDeviceToken[]>;
+  removeDeviceToken(userId: number, playerId: string): Promise<void>;
 }
 
 @injectable()
@@ -59,6 +64,29 @@ class NotificationRepositoryImpl implements INotificationRepository {
       .from(NotificationSchema)
       .where(and(eq(NotificationSchema.userId, userId), isNull(NotificationSchema.readAt)));
     return rows.length;
+  }
+
+  async upsertDeviceToken(userId: number, playerId: string, platform?: string): Promise<void> {
+    await this.db.client
+      .insert(DeviceTokenSchema)
+      .values({ userId, playerId, platform: platform ?? null })
+      .onConflictDoUpdate({
+        target: DeviceTokenSchema.playerId,
+        set: { userId, platform: platform ?? null },
+      });
+  }
+
+  async findTokensByUser(userId: number): Promise<IDeviceToken[]> {
+    return (await this.db.client
+      .select()
+      .from(DeviceTokenSchema)
+      .where(eq(DeviceTokenSchema.userId, userId))) as IDeviceToken[];
+  }
+
+  async removeDeviceToken(userId: number, playerId: string): Promise<void> {
+    await this.db.client
+      .delete(DeviceTokenSchema)
+      .where(and(eq(DeviceTokenSchema.userId, userId), eq(DeviceTokenSchema.playerId, playerId)));
   }
 }
 

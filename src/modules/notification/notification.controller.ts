@@ -3,8 +3,10 @@ import express, { Request } from 'express';
 import {
   BaseController,
   Controller,
+  Delete,
   Get,
   Patch,
+  Post,
 } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import NotificationService, { INotificationService } from './notification.service';
@@ -45,6 +47,20 @@ class NotificationController extends BaseController {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     await this.service.markAllRead(userId);
     return { success: true };
+  }
+
+  @Post('/device-token')
+  async registerDeviceToken(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const { player_id, platform } = req.body as { player_id: string; platform?: string };
+    return this.service.registerDeviceToken(userId, player_id, platform);
+  }
+
+  @Delete('/device-token/:playerId')
+  async removeDeviceToken(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const playerId = req.params.playerId as string;
+    return this.service.removeDeviceToken(userId, playerId);
   }
 }
 

@@ -89,6 +89,10 @@ export const CONSTANTS = {
   ADMIN_JWT_SECRET: process.env.ADMIN_JWT_SECRET as string,
   ADMIN_JWT_EXPIRES_IN: process.env.ADMIN_JWT_EXPIRES_IN || '4h',
 
+  // OneSignal push notifications
+  ONESIGNAL_APP_ID: process.env.ONESIGNAL_APP_ID || '',
+  ONESIGNAL_REST_API_KEY: process.env.ONESIGNAL_REST_API_KEY || '',
+
   OPENAI_COST_PER_1K_INPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_INPUT_TOKENS || '0.0025'),
   OPENAI_COST_PER_1K_OUTPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_OUTPUT_TOKENS || '0.010'),
 };

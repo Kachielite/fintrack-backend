@@ -1,4 +1,8 @@
-export type NotificationType = 'sync_complete' | 'sync_skipped' | 'sync_failed';
+export type NotificationType =
+  | 'sync_complete'
+  | 'sync_skipped'
+  | 'sync_failed'
+  | 'insight_generated';
 
 export interface INotification {
   id: number;
@@ -17,4 +21,12 @@ export interface ICreateNotification {
   title: string;
   body: string;
   data?: Record<string, unknown>;
+}
+
+export interface IDeviceToken {
+  id: number;
+  userId: number;
+  playerId: string;
+  platform: string | null;
+  createdAt: Date;
 }
