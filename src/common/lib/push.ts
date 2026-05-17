@@ -20,7 +20,7 @@ export async function sendPushNotification(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Basic ${CONSTANTS.ONESIGNAL_REST_API_KEY}`,
+        Authorization: `Key ${CONSTANTS.ONESIGNAL_REST_API_KEY}`,
       },
       body: JSON.stringify({
         app_id: CONSTANTS.ONESIGNAL_APP_ID,
