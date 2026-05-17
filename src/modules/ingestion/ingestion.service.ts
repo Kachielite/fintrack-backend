@@ -1023,12 +1023,15 @@ class IngestionService implements IIngestionService {
       return { category: learnedCategory, source: 'learned', verified: true };
     }
 
-    const normalized = `${merchant} ${subject} ${body}`.toLowerCase();
+    // Test DB category regex against the sanitized merchant name only.
+    // Matching the full email body causes overly-broad patterns (e.g. "TO", "TRANSFER")
+    // to fire on almost every transaction. The merchant name is already clean and specific.
+    const merchantLower = merchant.toLowerCase();
     for (const cat of categories) {
       if (!cat.regex) continue;
       try {
         const pattern = new RegExp(cat.regex, 'i');
-        if (pattern.test(normalized)) {
+        if (pattern.test(merchantLower)) {
           return { category: cat.slug, source: 'regex_rule', matchedRule: cat.regex, verified: false };
         }
       } catch {
