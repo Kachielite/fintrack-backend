@@ -415,14 +415,17 @@ CATEGORY CLASSIFICATION — choose the slug that best fits. Use the regex hints 
 ${categoryList}
 
 Brand → category hints:
-- Spotify, Netflix, Apple, YouTube Premium, JetBrains, GitHub, AWS, Vercel, Figma, Notion, Slack, 1Password → subscriptions
-- Glovo, Uber Eats, Bolt Food, Jumia Food, DoorDash, Deliveroo → dining_food_delivery
-- Uber, Bolt, inDrive, Taxify, Lyft → transport
-- Shoprite, Walmart, Tesco, Jumia, Amazon, Konga → groceries or retail_ecommerce
-- DSTV, GOtv, Showmax → entertainment_leisure
-- MTN, Airtel, Glo, 9mobile, Safaricom → mobile_internet
-- PHCN, EKEDC, IKEDC, AEDC, water bill → utilities
+- Spotify, Netflix, Apple Music/TV+, YouTube Premium, JetBrains, GitHub Copilot, AWS, Vercel, Figma, Notion, Slack, 1Password, Anthropic, Claude.ai, OpenAI, ChatGPT, Paddle.NET, Adobe → subscriptions
+- X Corp., Twitter → subscriptions
+- DSTV, GOtv, Showmax, Silverbird Cinema, Genesis Cinema → entertainment_leisure
+- Glovo, Uber Eats, Bolt Food, Jumia Food, DoorDash, Deliveroo, The Place, KFC, McDonald's → dining_food_delivery
+- Uber (non-eats), Bolt (non-food), inDrive, Taxify, Lyft → transport
+- MTN, Airtel (non-transfer), Glo, 9mobile, Safaricom, Data Purchase → mobile_internet
+- Shoprite, Jumia (non-food), Amazon (non-AWS), Konga → retail_ecommerce
+- PHCN, EKEDC, IKEDC, AEDC, electricity, water bill → utilities
 - ATM withdrawal, cash out → cash_withdrawal
+- FCY Conversion, currency conversion → currency_conversion
+- SMS charge, card maintenance, account maintenance, stamp duty, interest charge → bank_charges
 - Salary, payroll, stipend credit → salary_wages
 - Reversal, refund, cashback → refunds_reimbursements
 - Transfer to/from a person's name → peer_to_peer_transfer`,

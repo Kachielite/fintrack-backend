@@ -14,5 +14,6 @@ export const EmailConnectionResponseSchema = z.object({
   gmail_label_name: z.string().nullable(),
   last_synced_at: z.date().nullable(),
   created_at: z.date(),
+  already_connected: z.boolean().optional(),
 });
 export type EmailConnectionResponseDTO = z.infer<typeof EmailConnectionResponseSchema>;

@@ -100,7 +100,11 @@ class EmailConnectionService implements IEmailConnectionService {
       const existing = await this.connectionRepository.findByUserAndEmail(userId, gmailAddress);
 
       let connection: IEmailConnection;
+      let alreadyConnected = false;
+
       if (existing) {
+        // Refresh tokens for an existing connection (re-auth) without treating it as new.
+        alreadyConnected = true;
         connection = await this.connectionRepository.update(existing.id, {
           encryptedAccessToken,
           encryptedRefreshToken,
@@ -126,7 +130,7 @@ class EmailConnectionService implements IEmailConnectionService {
         logger.error(`[EmailConnection] Backfill failed for connection ${connection.id}: ${err?.message}`);
       });
 
-      return this.mapToDTO(connection);
+      return { ...this.mapToDTO(connection), already_connected: alreadyConnected };
     } catch (error) {
       logger.error(`Gmail callback error for userId ${userId} - ${error}`);
       throw new InternalServerException('Failed to connect Gmail account');
@@ -160,7 +164,21 @@ class EmailConnectionService implements IEmailConnectionService {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
 
-      setImmediate(() => {
+      // Capture label info before entering the async callback.
+      const labelId = connection.gmailLabelId;
+
+      setImmediate(async () => {
+        // Re-apply the Gmail label to any matching emails that arrived since the last sync.
+        // This ensures newly matched emails are in the label before polling fetches them.
+        if (labelId) {
+          try {
+            const oauth2Client = await this.getOAuth2Client(connection);
+            await this.backfillExistingEmails(id, labelId, oauth2Client);
+          } catch (err) {
+            logger.error(`[EmailConnection] Re-label step failed for connection ${id}: ${err}`);
+          }
+        }
+
         const { container } = require('tsyringe');
         const IngestionService = require('@/modules/ingestion/ingestion.service').default;
         const ingestionService = container.resolve(IngestionService);
@@ -340,6 +358,7 @@ class EmailConnectionService implements IEmailConnectionService {
       gmail_label_name: c.gmailLabelName,
       last_synced_at: c.lastSyncedAt,
       created_at: c.createdAt,
+      already_connected: false,
     };
   }
 }

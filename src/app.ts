@@ -75,7 +75,8 @@ class App {
           redirect_uri: CONSTANTS.GOOGLE_REDIRECT_URI,
         });
 
-        res.redirect(`${APP_DEEP_LINK}?connection_id=${connection.id}`);
+        const alreadyConnected = (connection as any).already_connected ? '1' : '0';
+        res.redirect(`${APP_DEEP_LINK}?connection_id=${connection.id}&already_connected=${alreadyConnected}`);
       } catch (err) {
         logger.error(`Gmail OAuth server callback failed - ${err}`);
         res.redirect(`${APP_DEEP_LINK}?error=callback_failed`);
