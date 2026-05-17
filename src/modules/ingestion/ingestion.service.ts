@@ -359,12 +359,9 @@ class IngestionService implements IIngestionService {
           emailBody,
           emailSubject,
         );
-        const merchant = this.resolveMerchant(
-          (regexResult.merchant as string) || undefined,
-          emailBody,
-          emailSubject,
-        );
-        const currency = (regexResult.currency as string) || user.refCurrency;
+        const rawMerchant = (regexResult.merchant as string) || undefined;
+        const merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
+        const currency = this.normalizeCurrency(regexResult.currency as string | undefined) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
           userId,
           merchant,
@@ -420,6 +417,7 @@ class IngestionService implements IIngestionService {
           parserTemplateId: templateResult.templateId,
           gmailMessageId: messageId,
           merchant,
+          originalMerchant: rawMerchant || this.extractMerchantHeuristic(emailBody, emailSubject),
           category,
           transactionType: normalizedType,
           amount: signedAmount,
@@ -475,15 +473,12 @@ class IngestionService implements IIngestionService {
         return false;
       }
 
-      const extractedCurrency = (extractedOrFallback.currency as string) || user.refCurrency;
+      const extractedCurrency = this.normalizeCurrency(extractedOrFallback.currency as string | undefined) || user.refCurrency;
       const normalizedType = this.normalizeTransactionType(extractedOrFallback.transactionType);
       const parsedAmount = Number(extractedOrFallback.amount ?? 0);
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-      const merchant = this.resolveMerchant(
-        (extractedOrFallback.merchant as string) || undefined,
-        emailBody,
-        emailSubject,
-      );
+      const rawMerchantAI = (extractedOrFallback.merchant as string) || undefined;
+      const merchant = this.resolveMerchant(rawMerchantAI, emailBody, emailSubject);
       const extractedDate = this.resolveTransactionDate(
         extractedOrFallback.date,
         emailBody,
@@ -540,6 +535,7 @@ class IngestionService implements IIngestionService {
         bankId: bank.id,
         gmailMessageId: messageId,
         merchant,
+        originalMerchant: rawMerchantAI || this.extractMerchantHeuristic(emailBody, emailSubject),
         category,
         transactionType: normalizedType,
         amount: signedAmount,
@@ -704,6 +700,37 @@ class IngestionService implements IIngestionService {
     if (!value) return 'Unknown';
     let text = value.replace(/\s+/g, ' ').trim();
 
+    // Early-exit: recognise Nigerian bank transaction-type descriptors
+    if (/\bsms\s*(alert\s*)?(charge|fee)\b/i.test(text)) return 'SMS Charge';
+    if (/\bdata\s*purchase\b/i.test(text)) return 'Data Purchase';
+    if (/\bairtime\s*(purchase|top[- ]?up|recharge)?\b/i.test(text)) return 'Airtime';
+    if (/\batm\s*(cash\s*)?withdrawal\b/i.test(text)) return 'ATM Withdrawal';
+    if (/\bcard\s*maintenance\s*(fee)?\b/i.test(text)) return 'Card Maintenance';
+    if (/\baccount\s*maintenance\s*(fee)?\b/i.test(text)) return 'Account Maintenance';
+    if (/\bstamp\s*duty\b/i.test(text)) return 'Stamp Duty';
+    if (/\b(vat|value\s*added\s*tax)\s*charge\b/i.test(text)) return 'VAT';
+    if (/\binterest\s+(charge|fee|debit)\b/i.test(text)) return 'Interest Charge';
+    if (/\bloan\s*repayment\b/i.test(text)) return 'Loan Repayment';
+    if (/\belectric(ity)?\s*(bill|purchase|token)\b/i.test(text)) return 'Electricity';
+    if (/\bwifi|broadband|internet\s*subscription\b/i.test(text)) return 'Internet';
+    if (/\bcable\s*(tv|television)\b/i.test(text)) return 'Cable TV';
+
+    // Extract name from transfer narrations
+    const transferMatch = text.match(
+      /\b(?:(?:inter[- ]?bank|intra[- ]?bank|online|mobile)\s+)?(?:transfer|payment)\s+(?:to|from)\s+([A-Za-z][A-Za-z\s'.,-]{2,50}?)(?:\s+via\b|\s*\d|\s*[-|/]|$)/i,
+    );
+    if (transferMatch?.[1]) {
+      const name = transferMatch[1].replace(/[-,:;|]+$/, '').trim();
+      if (name.length >= 3) return this.toTitleCase(name);
+    }
+
+    // Extract merchant from POS narrations
+    const posMatch = text.match(
+      /\bpos\s+(?:purchase|payment|debit)\s+(?:at|from|to|via)\s+([A-Za-z0-9][A-Za-z0-9\s&'.]{2,40}?)(?:\s+\w{2,3}$|\s*[-|/]|$)/i,
+    );
+    if (posMatch?.[1]) return this.toTitleCase(posMatch[1].trim());
+
+    // Strip boilerplate stop-phrases
     const stopPhrases = [
       'If you experience any problems',
       'If you experience any problem',
@@ -734,18 +761,13 @@ class IngestionService implements IIngestionService {
     }
 
     text = text
-      // Remove email addresses
       .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '')
-      // Remove leading long account/session numbers
       .replace(/^\d{12,}\s+/i, '')
-      // Remove pipe-separated TRF reference codes like "/TRF|2MPTc8ze3|1977788338..."
       .replace(/\/TRF[\|][A-Z0-9|_-]+/gi, '')
-      // Remove "BankName *****12345" suffixes appended by Moniepoint/OPay-style narrations
       .replace(
         /\s+(?:Moniepoint(?:\s+MFB)?|OPay|PalmPay|Opay|First\s*Bank(?:\s+of\s+Nigeria)?|GTBank|Zenith(?:\s+Bank)?|Access(?:\s+Bank)?|UBA|Stanbic\s+IBTC(?:\s+Bank)?|Ecobank(?:\s+Nigeria)?|Fidelity(?:\s+Bank)?|Sterling(?:\s+Bank)?|Keystone(?:\s+Bank)?|Union(?:\s+Bank)?|Wema(?:\s+Bank)?)\s*\*+\d{2,}/gi,
         '',
       )
-      // Remove any remaining "*****12345" masked account suffixes
       .replace(/\s+\*{3,}\d{2,}/g, '')
       .replace(/\bHEAD OFFICE BRANCH\b[\s\S]*$/i, '')
       .replace(/\b(if\s+you\s+need\s+assistance|thank\s+you\s+for\s+banking|remember:)\b[\s\S]*$/i, '')
@@ -753,8 +775,32 @@ class IngestionService implements IIngestionService {
       .trim();
 
     if (!text) return 'Unknown';
-    // Tighter cap — 80 chars is enough for any real merchant name
-    return text.length > 80 ? text.slice(0, 80).trim() : text;
+    const truncated = text.length > 80 ? text.slice(0, 80).trim() : text;
+    // If the remaining text is all-uppercase (common in Nigerian bank emails), convert to title case.
+    return truncated === truncated.toUpperCase() ? this.toTitleCase(truncated) : truncated;
+  }
+
+  private normalizeCurrency(currency: string | undefined): string | undefined {
+    if (!currency) return undefined;
+    const trimmed = currency.trim();
+    const symbolMap: Record<string, string> = {
+      '₦': 'NGN',
+      '$': 'USD',
+      '£': 'GBP',
+      '€': 'EUR',
+      '₵': 'GHS',
+      'KSH': 'KES',
+      'SH': 'KES',
+      'R': 'ZAR',
+    };
+    if (symbolMap[trimmed]) return symbolMap[trimmed];
+    const upper = trimmed.toUpperCase();
+    // Accept only 3-letter ISO codes
+    return /^[A-Z]{3}$/.test(upper) ? upper : undefined;
+  }
+
+  private toTitleCase(s: string): string {
+    return s.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
   }
 
   private sanitizeReference(value: string | undefined): string | undefined {

@@ -36,6 +36,7 @@ export interface ICreateTransaction {
   parserTemplateId?: number;
   gmailMessageId?: string;
   merchant: string;
+  originalMerchant?: string;
   category: string;
   transactionType: TransactionTypeEnum;
   amount: number;

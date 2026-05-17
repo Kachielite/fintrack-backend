@@ -1,8 +1,9 @@
 import { inject, injectable } from 'tsyringe';
 import express, { Request } from 'express';
-import { BaseController, Controller, Get } from '@/common/decorators/controller.decorator';
+import { BaseController, Controller, Get, Post } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import BankService, { IBankService } from './bank.service';
+import { ReportSenderSchema } from './bank.dto';
 
 @injectable()
 @Controller('/banks')
@@ -72,6 +73,56 @@ class BankController extends BaseController {
   async getBank(req: Request) {
     const id = parseInt(req.params.id as string, 10);
     return await this.bankService.getBank(id);
+  }
+
+  /**
+   * @swagger
+   * /banks/report-sender:
+   *   post:
+   *     tags: [Banks]
+   *     summary: Report a bank sender email not yet recognised by Vela
+   *     description: Adds the sender to the global bank knowledge so future emails from this address are detected automatically for all users.
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [sender_email]
+   *             properties:
+   *               sender_email:
+   *                 type: string
+   *                 format: email
+   *                 example: ebusinessgroup@zenithbank.com
+   *               bank_name:
+   *                 type: string
+   *                 example: Zenith Bank
+   *     responses:
+   *       '200':
+   *         description: Sender registered
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 matched:
+   *                   type: boolean
+   *                 bankName:
+   *                   type: string
+   *                   nullable: true
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/report-sender', { validate: ReportSenderSchema })
+  async reportSender(req: Request) {
+    const { sender_email, bank_name } = req.body as { sender_email: string; bank_name?: string };
+    return await this.bankService.reportSender(sender_email, bank_name);
   }
 }
 
