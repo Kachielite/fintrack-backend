@@ -313,7 +313,14 @@ Return JSON only in this exact format:
       const templates = await this.repository.findProductionTemplatesByBank(bankId);
       if (templates.length === 0) return null;
 
-      let bestMatch: { templateId: number; parsed: ParsedTransaction; score: number; matchedCount: number } | null = null;
+      let bestMatch: {
+        templateId: number;
+        confidenceScore: number;
+        matchCount: number;
+        parsed: ParsedTransaction;
+        score: number;
+        matchedCount: number;
+      } | null = null;
 
       for (const template of templates) {
         if (template.emailSubjectPattern) {
@@ -357,6 +364,8 @@ Return JSON only in this exact format:
         if (!bestMatch || score > bestMatch.score || (score === bestMatch.score && matchedCount > bestMatch.matchedCount)) {
           bestMatch = {
             templateId: template.id,
+            confidenceScore: template.confidenceScore,
+            matchCount: template.matchCount,
             parsed: result,
             score,
             matchedCount,
@@ -367,6 +376,8 @@ Return JSON only in this exact format:
       if (!bestMatch) return null;
       return {
         templateId: bestMatch.templateId,
+        confidenceScore: bestMatch.confidenceScore,
+        matchCount: bestMatch.matchCount,
         parsed: bestMatch.parsed,
       };
     } catch (error) {

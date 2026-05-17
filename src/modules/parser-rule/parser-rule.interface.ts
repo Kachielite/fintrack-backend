@@ -66,6 +66,8 @@ export interface ParsedTransaction {
 
 export interface TemplateParseResult {
   templateId: number;
+  confidenceScore: number;
+  matchCount: number;
   parsed: ParsedTransaction;
 }
 
