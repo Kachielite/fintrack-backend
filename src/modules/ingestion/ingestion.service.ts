@@ -14,6 +14,7 @@ import EmailConnectionService, {
 } from '@/modules/email-connection/email-connection.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
+import BudgetService, { IBudgetService } from '@/modules/budget/budget.service';
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
@@ -80,6 +81,7 @@ class IngestionService implements IIngestionService {
     private emailConnectionService: IEmailConnectionService,
     @inject(NotificationService) private notificationService: INotificationService,
     @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
+    @inject(BudgetService) private budgetService: IBudgetService,
   ) {}
 
   async pollAllConnections(): Promise<void> {
@@ -199,6 +201,10 @@ class IngestionService implements IIngestionService {
               : 'No new bank emails were found in your label.',
           data: { added: processedCount, connectionId },
         });
+      }
+
+      if (processedCount > 0) {
+        this.budgetService.checkBudgetAlerts(userId).catch(() => {});
       }
     } catch (error) {
       logger.error(`[Ingestion] Error polling connection ${connectionId} - ${error}`);

@@ -2,7 +2,9 @@ export type NotificationType =
   | 'sync_complete'
   | 'sync_skipped'
   | 'sync_failed'
-  | 'insight_generated';
+  | 'insight_generated'
+  | 'budget_warning'
+  | 'budget_exceeded';
 
 export interface INotification {
   id: number;
