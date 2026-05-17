@@ -19,6 +19,7 @@ import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modu
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
 import { IBank } from '@/modules/bank/bank.interface';
+import { CONSTANTS } from '@/common/configuration/constants';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -356,9 +357,24 @@ class IngestionService implements IIngestionService {
       );
 
       if (templateResult && Object.keys(templateResult.parsed).length > 0) {
+        if (templateResult.confidenceScore < CONSTANTS.REGEX_PRODUCTION_THRESHOLD) {
+          logger.info(
+            `[Ingestion] Skipping low-confidence template ${templateResult.templateId} (confidence=${templateResult.confidenceScore.toFixed(3)}, threshold=${CONSTANTS.REGEX_PRODUCTION_THRESHOLD.toFixed(3)}), messageId=${messageId}`,
+          );
+        } else {
         const regexResult = templateResult.parsed;
         const normalizedType = this.normalizeTransactionType(regexResult.transactionType);
-        const parsedAmount = Number(regexResult.amount ?? 0);
+        const parsedAmount = this.parsePositiveAmount(regexResult.amount);
+        if (parsedAmount == null) {
+          logger.warn(
+            `[Ingestion] Template ${templateResult.templateId} produced invalid amount for messageId=${messageId}; falling back to AI extraction`,
+          );
+          setImmediate(() => {
+            this.parserRuleService.recordFailure(templateResult.templateId).catch((err) => {
+              logger.error(`Failed to record regex failure for template ${templateResult.templateId} - ${err}`);
+            });
+          });
+        } else {
         const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
         const transactionDate = this.resolveTransactionDate(
           regexResult.date,
@@ -458,6 +474,8 @@ class IngestionService implements IIngestionService {
           `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
         );
         return true;
+        }
+        }
       }
 
       // No production regex template yet — extract directly with AI
@@ -482,7 +500,18 @@ class IngestionService implements IIngestionService {
 
       const extractedCurrency = this.normalizeCurrency(extractedOrFallback.currency as string | undefined) || user.refCurrency;
       const normalizedType = this.normalizeTransactionType(extractedOrFallback.transactionType);
-      const parsedAmount = Number(extractedOrFallback.amount ?? 0);
+      const parsedAmount = this.parsePositiveAmount(extractedOrFallback.amount);
+      if (parsedAmount == null) {
+        logger.info(
+          `[Ingestion] Extracted transaction has invalid amount for ${bank.name}, messageId=${messageId}; marking as non_transaction`,
+        );
+        await this.ingestionRepository.markProcessed({
+          emailConnectionId: connectionId,
+          gmailMessageId: messageId,
+          outcome: 'non_transaction',
+        });
+        return false;
+      }
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
       const rawMerchantAI = (extractedOrFallback.merchant as string) || undefined;
       const merchant = this.resolveMerchant(rawMerchantAI, emailBody, emailSubject);
@@ -875,6 +904,27 @@ class IngestionService implements IIngestionService {
     return normalized === TransactionTypeEnum.CREDIT
       ? TransactionTypeEnum.CREDIT
       : TransactionTypeEnum.DEBIT;
+  }
+
+  private parsePositiveAmount(value: unknown): number | null {
+    if (value == null) return null;
+    if (typeof value === 'number') {
+      if (!isFinite(value)) return null;
+      const abs = Math.abs(value);
+      return abs > 0 ? abs : null;
+    }
+    if (typeof value !== 'string') return null;
+
+    const cleaned = value
+      .replace(/,/g, '')
+      .replace(/[^0-9.\-]/g, '')
+      .trim();
+    if (!cleaned) return null;
+
+    const parsed = Number(cleaned);
+    if (!isFinite(parsed)) return null;
+    const abs = Math.abs(parsed);
+    return abs > 0 ? abs : null;
   }
 
   private toSignedAmount(amount: number, transactionType: TransactionTypeEnum): number {

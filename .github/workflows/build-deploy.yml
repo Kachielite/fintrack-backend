@@ -106,6 +106,8 @@ jobs:
             ADMIN_JWT_EXPIRES_IN=${{ secrets.ADMIN_JWT_EXPIRES_IN }}
             ADMIN_SEED_EMAIL=${{ secrets.ADMIN_SEED_EMAIL }}
             ADMIN_SEED_PASSWORD=${{ secrets.ADMIN_SEED_PASSWORD }}
+            ONESIGNAL_APP_ID=${{ secrets.ONESIGNAL_APP_ID }}
+            ONESIGNAL_REST_API_KEY=${{ secrets.ONESIGNAL_REST_API_KEY }}
             GITHUB_REPOSITORY_LOWERCASENAME=${{ github.repository }}
             EOF
             sed -i "s|GITHUB_REPOSITORY_LOWERCASENAME=.*|GITHUB_REPOSITORY_LOWERCASENAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')|" .env
