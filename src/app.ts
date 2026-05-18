@@ -69,12 +69,20 @@ class App {
       serverAdapter,
     });
 
-    // Accept token from Authorization header OR ?token= query param so the
-    // dashboard can be opened directly in a browser after admin login.
+    // Bull Board makes sub-requests (static assets, /api/queues) that don't carry
+    // ?token=. We resolve this with a short-lived HttpOnly cookie: on the first
+    // request that has a valid ?token= we set the cookie; every subsequent request
+    // (assets, API calls) is authenticated via that cookie automatically.
+    const COOKIE_NAME = 'bbs';
+    const readSessionCookie = (req: Request): string | undefined => {
+      const header = req.headers.cookie ?? '';
+      const match = header.match(new RegExp(`(?:^|;\\s*)${COOKIE_NAME}=([^;]+)`));
+      return match?.[1];
+    };
+
     const queueAuth = (req: Request, res: Response, next: NextFunction) => {
-      const token =
-        req.query.token as string | undefined ||
-        req.headers['authorization']?.replace('Bearer ', '');
+      const queryToken = req.query.token as string | undefined;
+      const token = queryToken ?? readSessionCookie(req) ?? req.headers['authorization']?.replace('Bearer ', '');
 
       if (!token) {
         res.status(401).json({ message: 'Admin access denied.' });
@@ -83,8 +91,19 @@ class App {
       try {
         const payload = jwt.verify(token, CONSTANTS.ADMIN_JWT_SECRET) as { role: string };
         if (payload.role !== 'admin') throw new Error();
+
+        // Stamp a session cookie so the browser's asset/API sub-requests are authenticated.
+        if (queryToken) {
+          res.cookie(COOKIE_NAME, queryToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict',
+            maxAge: 4 * 60 * 60 * 1000, // 4 h — matches admin JWT TTL
+          });
+        }
         next();
       } catch {
+        res.clearCookie(COOKIE_NAME);
         res.status(401).json({ message: 'Admin access denied.' });
       }
     };
