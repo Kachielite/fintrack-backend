@@ -1,7 +1,7 @@
 import rateLimit from 'express-rate-limit';
 import { Request, Response, NextFunction } from 'express';
 
-const PROBE_PATHS = ['/admin', '/wp-admin', '/.env', '/phpinfo', '/config'];
+const PROBE_PATHS = ['/wp-admin', '/wp-login', '/.env', '/phpinfo', '/config.php', '/admin.php'];
 
 export const rateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
