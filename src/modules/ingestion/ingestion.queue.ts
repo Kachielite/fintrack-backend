@@ -11,6 +11,7 @@ export interface ConnectionJobData {
 }
 
 let _queue: Queue<ConnectionJobData> | null = null;
+let _worker: Worker<ConnectionJobData> | null = null;
 
 export function getIngestionQueue(): Queue<ConnectionJobData> | null {
   const conn = getRedisConnection();
@@ -57,7 +58,11 @@ export function startIngestionWorker(): Worker<ConnectionJobData> | null {
   worker.on('failed', (job, err) =>
     logger.error(`[Queue] Job ${job?.id} (conn=${job?.data?.connectionId}) failed: ${err.message}`),
   );
+  worker.on('error', (err) =>
+    logger.error(`[Queue] Worker error: ${err.message}`),
+  );
 
+  _worker = worker;
   logger.info(`[Queue] Ingestion worker started (concurrency=${CONCURRENCY})`);
   return worker;
 }
