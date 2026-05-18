@@ -2,7 +2,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import { getRedisConnection } from '@/common/lib/redis';
 import logger from '@/common/lib/logger';
 
-const QUEUE_NAME = 'ingestion:connection';
+const QUEUE_NAME = 'ingestion-connection';
 const CONCURRENCY = parseInt(process.env.INGESTION_CONCURRENCY || '5', 10);
 
 export interface ConnectionJobData {

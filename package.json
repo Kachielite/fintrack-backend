@@ -25,6 +25,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@bull-board/api": "^7.1.5",
+    "@bull-board/express": "^7.1.5",
     "@types/ioredis": "^4.28.10",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.76.10",
