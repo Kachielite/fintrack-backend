@@ -97,8 +97,14 @@ class IngestionService implements IIngestionService {
         await Promise.all(
           connections.map((c) =>
             queue.add('poll', { connectionId: c.id, source: 'cron' }, {
-              // Deduplicate: if a cron job for this connection is already waiting/active, skip it.
-              jobId: `cron-${c.id}`,
+              // Deduplication key expires just before the next cron cycle so the same
+              // connection isn't polled twice concurrently, but CAN be re-queued on the
+              // next tick. Using jobId instead would block re-enqueueing for as long as
+              // the completed job's data key persists in Redis (removeOnComplete: {count}).
+              deduplication: {
+                id: `cron-${c.id}`,
+                ttl: (CONSTANTS.GMAIL_POLL_INTERVAL_MINUTES - 1) * 60 * 1000,
+              },
               priority: 10,
             }),
           ),
