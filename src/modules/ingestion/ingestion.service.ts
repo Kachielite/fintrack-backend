@@ -411,7 +411,31 @@ class IngestionService implements IIngestionService {
           emailSubject,
         );
         const rawMerchant = (regexResult.merchant as string) || undefined;
-        const merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
+        let merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
+        let extractedCategoryHint: string | undefined = regexResult.category as string | undefined;
+        const needsMerchantRepair = this.isLowQualityMerchant(merchant);
+        if (needsMerchantRepair) {
+          const repaired = await this.repairMerchantWithAi(
+            bank.name,
+            emailBody,
+            emailSubject,
+            dbCategories,
+          );
+          if (repaired) {
+            merchant = repaired.merchant;
+            extractedCategoryHint = repaired.category || extractedCategoryHint;
+            logger.info(
+              `[Ingestion] AI merchant repair applied for messageId=${messageId}: "${merchant}"`,
+            );
+          }
+
+          setImmediate(() => {
+            this.parserRuleService.recordFailure(templateResult.templateId).catch((err) => {
+              logger.error(`Failed to record regex failure for template ${templateResult.templateId} - ${err}`);
+            });
+          });
+          this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject);
+        }
         const currency = this.normalizeCurrency(regexResult.currency as string | undefined) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
           userId,
@@ -422,7 +446,7 @@ class IngestionService implements IIngestionService {
           emailSubject,
           emailBody,
           dbCategories,
-          regexResult.category as string | undefined,
+          extractedCategoryHint,
           learnedCategory,
         );
         const category = categoryResolution.category;
@@ -899,6 +923,43 @@ class IngestionService implements IIngestionService {
 
     const heuristic = this.extractMerchantHeuristic(body, subject);
     return this.sanitizeMerchant(heuristic);
+  }
+
+  private isLowQualityMerchant(merchant: string): boolean {
+    const normalized = merchant.trim().toLowerCase();
+    if (!normalized || normalized === 'unknown') return true;
+    if (normalized.includes('head office branch')) return true;
+    if (normalized === 'head office branch' || normalized === 'branch') return true;
+    // Low-signal machine-ish values are usually parser noise.
+    if (/^[a-f0-9-]{16,}$/i.test(normalized)) return true;
+    return false;
+  }
+
+  private async repairMerchantWithAi(
+    bankName: string,
+    body: string,
+    subject: string,
+    categories: ICategory[],
+  ): Promise<{ merchant: string; category?: string } | null> {
+    const extracted = await this.parserRuleService.extractTransaction(
+      bankName,
+      body,
+      subject,
+      categories,
+    );
+    if (!extracted) return null;
+
+    const repairedMerchant = this.resolveMerchant(
+      (extracted.merchant as string) || undefined,
+      body,
+      subject,
+    );
+    if (this.isLowQualityMerchant(repairedMerchant)) return null;
+
+    return {
+      merchant: repairedMerchant,
+      category: extracted.category as string | undefined,
+    };
   }
 
   private extractMerchantHeuristic(body: string, subject: string): string | undefined {
