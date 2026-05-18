@@ -62,7 +62,7 @@ class App {
     if (!queue) return;
 
     const serverAdapter = new ExpressAdapter();
-    serverAdapter.setBasePath('/admin/queues');
+    serverAdapter.setBasePath('/api/admin/queues');
 
     createBullBoard({
       queues: [new BullMQAdapter(queue)],
@@ -91,13 +91,13 @@ class App {
 
     // Disable CSP for this route so Bull Board's UI assets load correctly.
     this.app.use(
-      '/admin/queues',
+      '/api/admin/queues',
       helmet({ contentSecurityPolicy: false }),
       queueAuth,
       serverAdapter.getRouter(),
     );
 
-    logger.info('[BullBoard] Queue dashboard available at /admin/queues');
+    logger.info('[BullBoard] Queue dashboard available at /api/admin/queues');
   }
 
   private initiateOAuthCallbackRoute(): void {
