@@ -79,6 +79,8 @@ export const CONSTANTS = {
 
   TOKEN_ENCRYPTION_KEY: process.env.TOKEN_ENCRYPTION_KEY as string,
 
+  REDIS_URL: process.env.REDIS_URL || '',
+
   GMAIL_POLL_INTERVAL_MINUTES: parseInt(process.env.GMAIL_POLL_INTERVAL_MINUTES || '15', 10),
 
   REGEX_PRODUCTION_THRESHOLD: parseFloat(process.env.REGEX_PRODUCTION_THRESHOLD || '0.85'),

@@ -1,0 +1,63 @@
+# Local development stack — builds the app from source with hot reload.
+# Usage:
+#   docker compose -f docker-compose.dev.yml up
+#
+# On first run (or after schema changes):
+#   docker compose -f docker-compose.dev.yml run --rm app npx drizzle-kit push
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://fintrack:fintrack@postgres:5432/fintrack
+      REDIS_URL: redis://redis:6379
+    ports:
+      - '3000:3000'
+    volumes:
+      # Mount source so nodemon picks up local edits without rebuilding the image
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fintrack
+      POSTGRES_PASSWORD: fintrack
+      POSTGRES_DB: fintrack
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fintrack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

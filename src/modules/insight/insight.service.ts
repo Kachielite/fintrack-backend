@@ -184,6 +184,7 @@ Return JSON only.`,
       const fortyEightHoursAgo = new Date();
       fortyEightHoursAgo.setHours(fortyEightHoursAgo.getHours() - 48);
 
+      let newInsightCount = 0;
       for (const insight of insights) {
         const type = Object.values(InsightTypeEnum).includes(insight.type as InsightTypeEnum)
           ? insight.type
@@ -209,19 +210,22 @@ Return JSON only.`,
           },
           expiresAt: expiry,
         });
+        newInsightCount++;
       }
 
       await this.insightRepository.deleteExpired(userId);
-      logger.info(`Insights generated for user ${userId}`);
+      logger.info(`Insights generated for user ${userId} (${newInsightCount} new)`);
 
-      // Notify the user that new Iris insights are available.
-      this.notificationService.create({
-        userId,
-        type: 'insight_generated',
-        title: 'Iris has new insights for you',
-        body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
-        data: {},
-      }).catch(() => {});
+      // Only notify if there are actually new insights to show.
+      if (newInsightCount > 0) {
+        this.notificationService.create({
+          userId,
+          type: 'insight_generated',
+          title: 'Iris has new insights for you',
+          body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
+          data: {},
+        }).catch(() => {});
+      }
     } catch (error) {
       logger.error(`Error generating insights for user ${userId} - ${error}`);
     }

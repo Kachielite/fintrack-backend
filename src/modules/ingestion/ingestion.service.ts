@@ -20,6 +20,7 @@ import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
 import { IBank } from '@/modules/bank/bank.interface';
 import { CONSTANTS } from '@/common/configuration/constants';
+import { getIngestionQueue } from './ingestion.queue';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -54,6 +55,7 @@ interface CategoryResolution {
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
   pollConnection(connectionId: number, source?: TriggerSource): Promise<void>;
+  enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
   processMessage(
     connectionId: number,
     messageId: string,
@@ -88,10 +90,37 @@ class IngestionService implements IIngestionService {
   async pollAllConnections(): Promise<void> {
     try {
       const connections = await this.connectionRepository.findAllActive();
-      logger.info(`Polling ${connections.length} active email connections`);
-      await Promise.all(connections.map((c) => this.pollConnection(c.id)));
+      const queue = getIngestionQueue();
+
+      if (queue) {
+        logger.info(`[Ingestion] Enqueueing ${connections.length} connection(s) for polling`);
+        await Promise.all(
+          connections.map((c) =>
+            queue.add('poll', { connectionId: c.id, source: 'cron' }, {
+              // Deduplicate: if a cron job for this connection is already waiting/active, skip it.
+              jobId: `cron-${c.id}`,
+              priority: 10,
+            }),
+          ),
+        );
+      } else {
+        logger.info(`[Ingestion] Polling ${connections.length} active email connections (direct)`);
+        await Promise.all(connections.map((c) => this.pollConnection(c.id)));
+      }
     } catch (error) {
       logger.error(`Error in pollAllConnections - ${error}`);
+    }
+  }
+
+  async enqueuePoll(connectionId: number, source: TriggerSource = 'manual'): Promise<void> {
+    const queue = getIngestionQueue();
+    if (queue) {
+      await queue.add('poll', { connectionId, source }, { priority: 1 });
+    } else {
+      // No Redis — fire and forget directly, matching original behaviour.
+      this.pollConnection(connectionId, source).catch((err) =>
+        logger.error(`[Ingestion] Direct poll failed for connection ${connectionId} - ${err}`),
+      );
     }
   }
 
@@ -382,7 +411,31 @@ class IngestionService implements IIngestionService {
           emailSubject,
         );
         const rawMerchant = (regexResult.merchant as string) || undefined;
-        const merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
+        let merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
+        let extractedCategoryHint: string | undefined = regexResult.category as string | undefined;
+        const needsMerchantRepair = this.isLowQualityMerchant(merchant);
+        if (needsMerchantRepair) {
+          const repaired = await this.repairMerchantWithAi(
+            bank.name,
+            emailBody,
+            emailSubject,
+            dbCategories,
+          );
+          if (repaired) {
+            merchant = repaired.merchant;
+            extractedCategoryHint = repaired.category || extractedCategoryHint;
+            logger.info(
+              `[Ingestion] AI merchant repair applied for messageId=${messageId}: "${merchant}"`,
+            );
+          }
+
+          setImmediate(() => {
+            this.parserRuleService.recordFailure(templateResult.templateId).catch((err) => {
+              logger.error(`Failed to record regex failure for template ${templateResult.templateId} - ${err}`);
+            });
+          });
+          this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject);
+        }
         const currency = this.normalizeCurrency(regexResult.currency as string | undefined) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
           userId,
@@ -393,7 +446,7 @@ class IngestionService implements IIngestionService {
           emailSubject,
           emailBody,
           dbCategories,
-          regexResult.category as string | undefined,
+          extractedCategoryHint,
           learnedCategory,
         );
         const category = categoryResolution.category;
@@ -870,6 +923,43 @@ class IngestionService implements IIngestionService {
 
     const heuristic = this.extractMerchantHeuristic(body, subject);
     return this.sanitizeMerchant(heuristic);
+  }
+
+  private isLowQualityMerchant(merchant: string): boolean {
+    const normalized = merchant.trim().toLowerCase();
+    if (!normalized || normalized === 'unknown') return true;
+    if (normalized.includes('head office branch')) return true;
+    if (normalized === 'head office branch' || normalized === 'branch') return true;
+    // Low-signal machine-ish values are usually parser noise.
+    if (/^[a-f0-9-]{16,}$/i.test(normalized)) return true;
+    return false;
+  }
+
+  private async repairMerchantWithAi(
+    bankName: string,
+    body: string,
+    subject: string,
+    categories: ICategory[],
+  ): Promise<{ merchant: string; category?: string } | null> {
+    const extracted = await this.parserRuleService.extractTransaction(
+      bankName,
+      body,
+      subject,
+      categories,
+    );
+    if (!extracted) return null;
+
+    const repairedMerchant = this.resolveMerchant(
+      (extracted.merchant as string) || undefined,
+      body,
+      subject,
+    );
+    if (this.isLowQualityMerchant(repairedMerchant)) return null;
+
+    return {
+      merchant: repairedMerchant,
+      category: extracted.category as string | undefined,
+    };
   }
 
   private extractMerchantHeuristic(body: string, subject: string): string | undefined {

@@ -182,7 +182,7 @@ class EmailConnectionService implements IEmailConnectionService {
         const { container } = require('tsyringe');
         const IngestionService = require('@/modules/ingestion/ingestion.service').default;
         const ingestionService = container.resolve(IngestionService);
-        ingestionService.pollConnection(id, 'manual').catch((err: unknown) => {
+        ingestionService.enqueuePoll(id, 'manual').catch((err: unknown) => {
           logger.error(`Background manual sync failed for connection ${id} - ${err}`);
         });
       });
