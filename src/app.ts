@@ -1,7 +1,8 @@
 import 'reflect-metadata';
-import express, { Express, Request, Response } from 'express';
+import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import jwt from 'jsonwebtoken';
 import { container, inject, injectable } from 'tsyringe';
 import { APP_TOKENS } from '@/common/constants/app.tokens';
 import { CONSTANTS } from '@/common/configuration/constants';
@@ -18,6 +19,10 @@ import syncEventBus from '@/common/lib/sync-event-bus';
 import { IEmailConnectionRepository } from '@/modules/email-connection/email-connection.repository';
 import IngestionService, { IIngestionService } from '@/modules/ingestion/ingestion.service';
 import { IAuthenticatedRequest } from '@/common/types/interface';
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
+import { getIngestionQueue } from '@/modules/ingestion/ingestion.queue';
 
 @injectable()
 class App {
@@ -48,7 +53,51 @@ class App {
   private initiateRoutes(): void {
     this.initiateOAuthCallbackRoute();
     this.initiateSyncSSERoute();
+    this.initiateBullBoard();
     applyMounts(this.app);
+  }
+
+  private initiateBullBoard(): void {
+    const queue = getIngestionQueue();
+    if (!queue) return;
+
+    const serverAdapter = new ExpressAdapter();
+    serverAdapter.setBasePath('/admin/queues');
+
+    createBullBoard({
+      queues: [new BullMQAdapter(queue)],
+      serverAdapter,
+    });
+
+    // Accept token from Authorization header OR ?token= query param so the
+    // dashboard can be opened directly in a browser after admin login.
+    const queueAuth = (req: Request, res: Response, next: NextFunction) => {
+      const token =
+        req.query.token as string | undefined ||
+        req.headers['authorization']?.replace('Bearer ', '');
+
+      if (!token) {
+        res.status(401).json({ message: 'Admin access denied.' });
+        return;
+      }
+      try {
+        const payload = jwt.verify(token, CONSTANTS.ADMIN_JWT_SECRET) as { role: string };
+        if (payload.role !== 'admin') throw new Error();
+        next();
+      } catch {
+        res.status(401).json({ message: 'Admin access denied.' });
+      }
+    };
+
+    // Disable CSP for this route so Bull Board's UI assets load correctly.
+    this.app.use(
+      '/admin/queues',
+      helmet({ contentSecurityPolicy: false }),
+      queueAuth,
+      serverAdapter.getRouter(),
+    );
+
+    logger.info('[BullBoard] Queue dashboard available at /admin/queues');
   }
 
   private initiateOAuthCallbackRoute(): void {
