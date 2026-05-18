@@ -109,6 +109,8 @@ jobs:
             ONESIGNAL_APP_ID=${{ secrets.ONESIGNAL_APP_ID }}
             ONESIGNAL_REST_API_KEY=${{ secrets.ONESIGNAL_REST_API_KEY }}
             GITHUB_REPOSITORY_LOWERCASENAME=${{ github.repository }}
+            REDIS_URL=redis://redis:6379
+            INGESTION_CONCURRENCY=${{ secrets.INGESTION_CONCURRENCY }}
             EOF
             sed -i "s|GITHUB_REPOSITORY_LOWERCASENAME=.*|GITHUB_REPOSITORY_LOWERCASENAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')|" .env
             echo "Pulling latest images..."

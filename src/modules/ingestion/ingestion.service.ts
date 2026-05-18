@@ -20,6 +20,7 @@ import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
 import { IBank } from '@/modules/bank/bank.interface';
 import { CONSTANTS } from '@/common/configuration/constants';
+import { getIngestionQueue } from './ingestion.queue';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -54,6 +55,7 @@ interface CategoryResolution {
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
   pollConnection(connectionId: number, source?: TriggerSource): Promise<void>;
+  enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
   processMessage(
     connectionId: number,
     messageId: string,
@@ -88,10 +90,37 @@ class IngestionService implements IIngestionService {
   async pollAllConnections(): Promise<void> {
     try {
       const connections = await this.connectionRepository.findAllActive();
-      logger.info(`Polling ${connections.length} active email connections`);
-      await Promise.all(connections.map((c) => this.pollConnection(c.id)));
+      const queue = getIngestionQueue();
+
+      if (queue) {
+        logger.info(`[Ingestion] Enqueueing ${connections.length} connection(s) for polling`);
+        await Promise.all(
+          connections.map((c) =>
+            queue.add('poll', { connectionId: c.id, source: 'cron' }, {
+              // Deduplicate: if a cron job for this connection is already waiting/active, skip it.
+              jobId: `cron-${c.id}`,
+              priority: 10,
+            }),
+          ),
+        );
+      } else {
+        logger.info(`[Ingestion] Polling ${connections.length} active email connections (direct)`);
+        await Promise.all(connections.map((c) => this.pollConnection(c.id)));
+      }
     } catch (error) {
       logger.error(`Error in pollAllConnections - ${error}`);
+    }
+  }
+
+  async enqueuePoll(connectionId: number, source: TriggerSource = 'manual'): Promise<void> {
+    const queue = getIngestionQueue();
+    if (queue) {
+      await queue.add('poll', { connectionId, source }, { priority: 1 });
+    } else {
+      // No Redis — fire and forget directly, matching original behaviour.
+      this.pollConnection(connectionId, source).catch((err) =>
+        logger.error(`[Ingestion] Direct poll failed for connection ${connectionId} - ${err}`),
+      );
     }
   }
 
