@@ -7,12 +7,12 @@ import { IIrisSession, IIrisMessage } from './iris.interface';
 import { SendMessageDTO } from './iris.dto';
 import { IrisMessageRoleEnum } from './iris.enum';
 import { IUserRepository } from '@/modules/user/user.repository';
+import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
+import { IBudgetRepository } from '@/modules/budget/budget.repository';
+import { IGoalRepository } from '@/modules/goal/goal.repository';
 import { buildSystemPrompt } from './prompt/system-prompt';
-import { buildSuggestionPrompt } from './prompt/suggestion-prompt';
-import EmbeddingService, { IEmbeddingService } from './embedding/embedding.service';
-import RetrievalService, { IRetrievalService } from './retrieval/retrieval.service';
+import { parseTimeFrame } from './time-frame';
 import { ResourceNotFoundException, InternalServerException } from '@/common/exception';
-import { INotificationService } from '@/modules/notification/notification.service';
 
 export interface IIrisService {
   getStatus(userId: number): Promise<{ ready: boolean }>;
@@ -39,37 +39,20 @@ class IrisService implements IIrisService {
   constructor(
     @inject('IIrisRepository') private irisRepository: IIrisRepository,
     @inject('IUserRepository') private userRepository: IUserRepository,
-    @inject(EmbeddingService) private embeddingService: IEmbeddingService,
-    @inject(RetrievalService) private retrievalService: IRetrievalService,
-    @inject('INotificationService') private notificationService: INotificationService,
+    @inject('ITransactionRepository') private transactionRepository: ITransactionRepository,
+    @inject('IBudgetRepository') private budgetRepository: IBudgetRepository,
+    @inject('IGoalRepository') private goalRepository: IGoalRepository,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
 
-  async getStatus(userId: number): Promise<{ ready: boolean }> {
-    const ready = await this.irisRepository.hasEmbeddings(userId);
-    return { ready };
+  // Data is always available on demand — no embedding build required
+  async getStatus(_userId: number): Promise<{ ready: boolean }> {
+    return { ready: true };
   }
 
-  async initialize(userId: number): Promise<void> {
-    // No-op if embeddings already exist — avoids duplicate "ready" notifications
-    const already = await this.irisRepository.hasEmbeddings(userId);
-    if (already) return;
-
-    // Run rebuild in background — caller gets an immediate 202
-    this.embeddingService
-      .rebuildForUser(userId)
-      .then(() => {
-        this.notificationService
-          .create({
-            userId,
-            type: 'iris_ready',
-            title: 'Iris is ready',
-            body: 'Your financial data has been loaded. Ask Iris anything.',
-          })
-          .catch(() => {});
-      })
-      .catch((err) => logger.error(`Iris initialize failed for user ${userId}: ${err}`));
+  async initialize(_userId: number): Promise<void> {
+    // No-op: v1 queries data live, no embedding pipeline
   }
 
   async createSession(userId: number): Promise<IIrisSession> {
@@ -100,14 +83,12 @@ class IrisService implements IIrisService {
     if (!session) throw new ResourceNotFoundException('Session not found');
     if (!user) throw new InternalServerException('User not found');
 
-    // Persist user message
     await this.irisRepository.createMessage({
       sessionId,
       role: IrisMessageRoleEnum.USER,
       content: dto.content,
     });
 
-    // Auto-title the session from the first message
     if (!session.title) {
       const count = await this.irisRepository.countMessages(sessionId);
       if (count <= 1) {
@@ -115,16 +96,11 @@ class IrisService implements IIrisService {
       }
     }
 
-    // Build embeddings on first message if they don't exist yet
-    const hasData = await this.irisRepository.hasEmbeddings(userId);
-    if (!hasData) {
-      await this.embeddingService.rebuildForUser(userId);
-    }
+    const timeFrame = parseTimeFrame(dto.content);
 
-    // Parallel: fetch conversation history + retrieve relevant context
     const [history, retrievedContext] = await Promise.all([
       this.irisRepository.findRecentMessages(sessionId, CONSTANTS.IRIS_MAX_CONTEXT_MESSAGES),
-      this.retrievalService.retrieveContext(userId, dto.content).catch(() => ''),
+      this.buildLiveContext(userId, timeFrame).catch(() => ''),
     ]);
 
     const systemPrompt = buildSystemPrompt({
@@ -167,33 +143,128 @@ class IrisService implements IIrisService {
     });
   }
 
-  async getSuggestions(userId: number): Promise<string[]> {
-    try {
-      const probeEmbedding = await this.embeddingService
-        .embed('spending budget goals merchants')
-        .catch(() => [] as number[]);
+  // Returns static chips for now; can be personalised later
+  async getSuggestions(_userId: number): Promise<string[]> {
+    return FALLBACK_SUGGESTIONS;
+  }
 
-      if (probeEmbedding.length === 0) return FALLBACK_SUGGESTIONS;
+  // ── Private helpers ─────────────────────────────────────────────────────────
 
-      const chunks = await this.irisRepository
-        .findSimilarChunks(userId, probeEmbedding, 4)
-        .catch(() => []);
+  private async buildLiveContext(userId: number, timeFrame: { start: Date; end: Date; label: string }): Promise<string> {
+    const { start, end, label } = timeFrame;
+    const now = new Date();
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-      const snapshot = chunks.map((c) => c.content).join('\n');
-      if (!snapshot) return FALLBACK_SUGGESTIONS;
+    // Expand to at least current month so budget status always has data
+    const fetchStart = start < currentMonthStart ? start : currentMonthStart;
 
-      const prompt = buildSuggestionPrompt(snapshot);
-      const response = await this.openai.chat.completions.create({
-        model: CONSTANTS.OPENAI_MODEL_INSIGHT,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        max_tokens: 200,
-      });
-      const raw = JSON.parse(response.choices[0].message.content ?? '{}');
-      return Array.isArray(raw.suggestions) ? raw.suggestions.slice(0, 4) : FALLBACK_SUGGESTIONS;
-    } catch {
-      return FALLBACK_SUGGESTIONS;
+    const [txns, budgets, goals] = await Promise.all([
+      this.transactionRepository.findForSummary(userId, fetchStart, end),
+      this.budgetRepository.findAllActive(userId),
+      this.goalRepository.findAllByUser(userId),
+    ]);
+
+    const currency = txns[0]?.refCurrency ?? 'NGN';
+    const parts: string[] = [`Data range: ${label}`];
+
+    // Transactions within the requested window
+    const rangedTxns = txns.filter((t) => {
+      const d = new Date(t.transactionDate);
+      return d >= start && d <= end;
+    });
+
+    const debits = rangedTxns.filter((t) => t.amount < 0);
+    const credits = rangedTxns.filter((t) => t.amount > 0);
+    const totalSpend = debits.reduce((s, t) => s + Math.abs(t.refAmount), 0);
+    const totalIncome = credits.reduce((s, t) => s + Math.abs(t.refAmount), 0);
+
+    // Spending summary
+    const categoryMap = debits.reduce<Record<string, number>>((acc, t) => {
+      acc[t.category] = (acc[t.category] ?? 0) + Math.abs(t.refAmount);
+      return acc;
+    }, {});
+    const topCategories = Object.entries(categoryMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([cat, total]) => `${cat}: ${total.toFixed(2)}`)
+      .join(', ');
+    parts.push(
+      `Spending for ${label}: ${totalSpend.toFixed(2)} ${currency} across ${debits.length} transactions.` +
+        (topCategories ? ` Top categories: ${topCategories}.` : ''),
+    );
+
+    if (totalIncome > 0) {
+      parts.push(`Income for ${label}: ${totalIncome.toFixed(2)} ${currency} across ${credits.length} transactions.`);
     }
+
+    // Top merchants
+    const merchantMap = debits.reduce<Record<string, number>>((acc, t) => {
+      const name = t.merchant || 'Unknown';
+      acc[name] = (acc[name] ?? 0) + Math.abs(t.refAmount);
+      return acc;
+    }, {});
+    const topMerchants = Object.entries(merchantMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 15)
+      .map(([m, total]) => `${m}: ${total.toFixed(2)} ${currency}`)
+      .join('; ');
+    if (topMerchants) parts.push(`Top merchants for ${label}: ${topMerchants}.`);
+
+    // Monthly breakdown when range spans multiple months
+    if (debits.length > 0) {
+      const monthSet = new Set(debits.map((t) => {
+        const d = new Date(t.transactionDate);
+        return `${d.getFullYear()}-${d.getMonth()}`;
+      }));
+      if (monthSet.size > 1) {
+        const monthlyLines: string[] = [];
+        monthSet.forEach((key) => {
+          const [yr, mo] = key.split('-').map(Number);
+          const mStart = new Date(yr, mo, 1);
+          const mEnd = new Date(yr, mo + 1, 0, 23, 59, 59);
+          const mDebits = debits.filter((t) => {
+            const d = new Date(t.transactionDate);
+            return d >= mStart && d <= mEnd;
+          });
+          const mTotal = mDebits.reduce((s, t) => s + Math.abs(t.refAmount), 0);
+          if (mTotal > 0) {
+            const mLabel = mStart.toLocaleString('en', { month: 'long', year: 'numeric' });
+            monthlyLines.push(`${mLabel}: ${mTotal.toFixed(2)} ${currency} (${mDebits.length} txns)`);
+          }
+        });
+        if (monthlyLines.length > 0) {
+          parts.push(`Monthly breakdown: ${monthlyLines.join('; ')}.`);
+        }
+      }
+    }
+
+    // Budget status — always current month
+    if (budgets.length > 0) {
+      const currentDebits = txns.filter((t) => {
+        const d = new Date(t.transactionDate);
+        return t.amount < 0 && d >= currentMonthStart;
+      });
+      const budgetLines = budgets.map((b) => {
+        const spent = currentDebits
+          .filter((t) => t.category === b.category)
+          .reduce((s, t) => s + Math.abs(t.refAmount), 0);
+        const pct = b.limitAmount > 0 ? ((spent / b.limitAmount) * 100).toFixed(0) : '0';
+        return `${b.category}: ${spent.toFixed(2)} / ${b.limitAmount} ${currency} (${pct}% used)`;
+      });
+      parts.push(`Budget status this month: ${budgetLines.join('; ')}.`);
+    }
+
+    // Goals
+    if (goals.length > 0) {
+      const goalLines = goals.map((g) => {
+        const target = g.targetAmount ?? 0;
+        const pct = target > 0 ? ((g.savedAmount / target) * 100).toFixed(0) : '0';
+        return `${g.name} (${g.type}): ${g.savedAmount.toFixed(2)} / ${target} ${currency} (${pct}% saved)`;
+      });
+      parts.push(`Financial goals: ${goalLines.join('; ')}.`);
+    }
+
+    return parts.join('\n');
   }
 }
 
