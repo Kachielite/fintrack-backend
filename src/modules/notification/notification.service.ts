@@ -39,7 +39,7 @@ class NotificationService implements INotificationService {
   async list(userId: number): Promise<NotificationResponseDto[]> {
     logger.info(`[Notification] Listing notifications for user ${userId}`);
     const rows = await this.repo.findByUser(userId);
-    return rows.reverse().map(mapNotificationToDto);
+    return rows.map(mapNotificationToDto);
   }
 
   async markRead(id: number, userId: number): Promise<void> {
