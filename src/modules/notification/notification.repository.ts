@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { NotificationSchema } from './notification.schema';
 import { DeviceTokenSchema } from './device-token.schema';
@@ -35,12 +35,12 @@ class NotificationRepositoryImpl implements INotificationRepository {
     return row as INotification;
   }
 
-  async findByUser(userId: number, limit = 50): Promise<INotification[]> {
+  async findByUser(userId: number, limit = 100): Promise<INotification[]> {
     return (await this.db.client
       .select()
       .from(NotificationSchema)
       .where(eq(NotificationSchema.userId, userId))
-      .orderBy(NotificationSchema.createdAt)
+      .orderBy(desc(NotificationSchema.createdAt))
       .limit(limit)) as INotification[];
   }
 
