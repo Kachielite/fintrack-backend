@@ -80,12 +80,13 @@ class TransactionService implements ITransactionService {
       const from = new Date(y, m - 1, 1);
       const to = new Date(y, m, 0, 23, 59, 59);
 
-      const prevFrom = new Date(y, m - 2, 1);
-      const prevTo = new Date(y, m - 1, 0, 23, 59, 59);
+      // Fetch the last 3 months worth of data for the rolling average comparison
+      const threeMonthsFrom = new Date(y, m - 4, 1);
+      const threeMonthsTo = new Date(y, m - 1, 0, 23, 59, 59);
 
       const [transactions, prevTransactions] = await Promise.all([
         this.transactionRepository.findForSummary(userId, from, to),
-        this.transactionRepository.findForSummary(userId, prevFrom, prevTo),
+        this.transactionRepository.findForSummary(userId, threeMonthsFrom, threeMonthsTo),
       ]);
 
       const totalSpend = transactions
@@ -95,11 +96,25 @@ class TransactionService implements ITransactionService {
         .filter((t) => t.amount > 0)
         .reduce((acc, t) => acc + t.refAmount, 0);
 
-      const prevSpend = prevTransactions
-        .filter((t) => t.amount < 0)
-        .reduce((acc, t) => acc + Math.abs(t.refAmount), 0);
+      // Split the 3-month window into individual months and average their spend
+      const monthlySpends: number[] = [];
+      for (let i = 1; i <= 3; i++) {
+        const mStart = new Date(y, m - 1 - i, 1);
+        const mEnd = new Date(y, m - i, 0, 23, 59, 59);
+        const spend = prevTransactions
+          .filter((t) => {
+            const d = new Date(t.transactionDate);
+            return t.amount < 0 && d >= mStart && d <= mEnd;
+          })
+          .reduce((acc, t) => acc + Math.abs(t.refAmount), 0);
+        if (spend > 0) monthlySpends.push(spend);
+      }
+      const avgPrevSpend =
+        monthlySpends.length > 0
+          ? monthlySpends.reduce((s, v) => s + v, 0) / monthlySpends.length
+          : 0;
 
-      const vsLastPeriodPct = prevSpend > 0 ? ((totalSpend - prevSpend) / prevSpend) * 100 : null;
+      const vsLastPeriodPct = avgPrevSpend > 0 ? ((totalSpend - avgPrevSpend) / avgPrevSpend) * 100 : null;
 
       const categoryMap = new Map<string, { total: number; count: number }>();
       for (const t of transactions.filter((tx) => tx.amount < 0)) {
