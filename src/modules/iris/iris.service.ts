@@ -52,6 +52,10 @@ class IrisService implements IIrisService {
   }
 
   async initialize(userId: number): Promise<void> {
+    // No-op if embeddings already exist — avoids duplicate "ready" notifications
+    const already = await this.irisRepository.hasEmbeddings(userId);
+    if (already) return;
+
     // Run rebuild in background — caller gets an immediate 202
     this.embeddingService
       .rebuildForUser(userId)
