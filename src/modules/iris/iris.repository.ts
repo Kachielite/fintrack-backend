@@ -38,6 +38,7 @@ export interface IIrisRepository {
     content: string;
     embedding: number[];
   }): Promise<void>;
+  hasEmbeddings(userId: number): Promise<boolean>;
   findSimilarChunks(
     userId: number,
     embedding: number[],
@@ -145,6 +146,15 @@ class IrisRepositoryImpl implements IIrisRepository {
           ON CONFLICT (user_id, chunk_type, period)
           DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, updated_at = now()`,
     );
+  }
+
+  async hasEmbeddings(userId: number): Promise<boolean> {
+    const rows = await this.db.client
+      .select({ id: IrisEmbeddingSchema.id })
+      .from(IrisEmbeddingSchema)
+      .where(eq(IrisEmbeddingSchema.userId, userId))
+      .limit(1);
+    return rows.length > 0;
   }
 
   async findSimilarChunks(
