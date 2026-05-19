@@ -12,4 +12,5 @@ export const ROUTER_TOKENS = {
   ADMIN: Symbol.for('AdminRouter'),
   NOTIFICATION: Symbol.for('NotificationRouter'),
   CATEGORY: Symbol.for('CategoryRouter'),
+  IRIS: Symbol.for('IrisRouter'),
 };

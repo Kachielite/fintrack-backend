@@ -121,8 +121,9 @@ class BankController extends BaseController {
    */
   @Post('/report-sender', { validate: ReportSenderSchema })
   async reportSender(req: Request) {
+    const userId = (req as any).user.id as number;
     const { sender_email, bank_name } = req.body as { sender_email: string; bank_name?: string };
-    return await this.bankService.reportSender(sender_email, bank_name);
+    return await this.bankService.reportSender(userId, sender_email, bank_name);
   }
 }
 
