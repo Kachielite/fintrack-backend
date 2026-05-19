@@ -16,6 +16,19 @@ class IrisController extends BaseController {
     super(router);
   }
 
+  @Get('/status')
+  async getStatus(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.service.getStatus(userId);
+  }
+
+  @Post('/initialize', { statusCode: 202 })
+  async initialize(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    await this.service.initialize(userId);
+    return { message: 'Initialization started' };
+  }
+
   @Post('/sessions', { statusCode: 201 })
   async createSession(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
