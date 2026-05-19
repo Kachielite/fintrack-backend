@@ -21,6 +21,7 @@ const authPrefixes = [
   '/api/insights',
   '/api/parser-rules',
   '/api/notifications',
+  '/api/iris',
 ];
 
 @injectable()

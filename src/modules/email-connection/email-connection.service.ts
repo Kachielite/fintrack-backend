@@ -46,6 +46,7 @@ export interface IEmailConnectionService {
   deleteConnectionData(id: number, userId: number): Promise<IGeneralResponse<null>>;
   deleteConnection(id: number, userId: number): Promise<IGeneralResponse<null>>;
   getOAuth2Client(connection: IEmailConnection): Promise<any>;
+  addSenderFilterAndResync(userId: number, senderEmail: string): Promise<void>;
 }
 
 @injectable()
@@ -245,6 +246,64 @@ class EmailConnectionService implements IEmailConnectionService {
       logger.error(`Error deleting connection ${id} - ${error}`);
       throw new InternalServerException('Failed to delete email connection');
     }
+  }
+
+  async addSenderFilterAndResync(userId: number, senderEmail: string): Promise<void> {
+    const connections = await this.connectionRepository.findAllByUser(userId);
+    const active = connections.filter((c) => c.status === ConnectionStatusEnum.ACTIVE);
+    if (active.length === 0) return;
+
+    await Promise.all(
+      active.map(async (connection) => {
+        try {
+          const oauth2Client = await this.getOAuth2Client(connection);
+          const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+          const labelId = connection.gmailLabelId;
+          if (!labelId) return;
+
+          // Create a from: filter so future emails are auto-labelled
+          await gmail.users.settings.filters.create({
+            userId: 'me',
+            requestBody: {
+              criteria: { from: senderEmail },
+              action: { addLabelIds: [labelId], removeLabelIds: [] },
+            },
+          });
+
+          // Backfill existing emails from this sender
+          const senderQuery = `from:${senderEmail}`;
+          const searchRes = await gmail.users.messages.list({
+            userId: 'me',
+            q: senderQuery,
+            maxResults: BACKFILL_MAX_MESSAGES,
+          });
+          const messages = searchRes.data.messages;
+          if (messages && messages.length > 0) {
+            const ids = messages.filter((m) => m.id).map((m) => m.id!);
+            await gmail.users.messages.batchModify({
+              userId: 'me',
+              requestBody: { ids, addLabelIds: [labelId] },
+            });
+            logger.info(`[EmailConnection] Backfilled ${ids.length} messages from ${senderEmail} for connection ${connection.id}`);
+          }
+
+          // Trigger ingestion poll
+          setImmediate(async () => {
+            try {
+              const { container } = require('tsyringe');
+              const IngestionService = require('@/modules/ingestion/ingestion.service').default;
+              const ingestionService = container.resolve(IngestionService);
+              await ingestionService.enqueuePoll(connection.id, 'manual');
+            } catch (err) {
+              logger.error(`[EmailConnection] Ingestion poll failed for connection ${connection.id}: ${err}`);
+            }
+          });
+        } catch (err) {
+          logger.error(`[EmailConnection] addSenderFilterAndResync failed for connection ${connection.id}: ${err}`);
+        }
+      }),
+    );
   }
 
   async getOAuth2Client(connection: IEmailConnection): Promise<any> {

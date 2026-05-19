@@ -64,6 +64,13 @@
       "when": 1779105600000,
       "tag": "0008_device_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1747699200000,
+      "tag": "0009_iris_chat",
+      "breakpoints": true
     }
   ]
 }

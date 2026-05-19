@@ -4,16 +4,20 @@ import { IBank } from './bank.interface';
 import { BankResponseDTO } from './bank.dto';
 import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
+import EmailConnectionService, { IEmailConnectionService } from '@/modules/email-connection/email-connection.service';
 
 export interface IBankService {
   listBanks(): Promise<BankResponseDTO[]>;
   getBank(id: number): Promise<BankResponseDTO>;
-  reportSender(senderEmail: string, bankName?: string): Promise<{ matched: boolean; bankName: string | null }>;
+  reportSender(userId: number, senderEmail: string, bankName?: string): Promise<{ matched: boolean; bankName: string | null }>;
 }
 
 @injectable()
 class BankService implements IBankService {
-  constructor(@inject('IBankRepository') private bankRepository: IBankRepository) {}
+  constructor(
+    @inject('IBankRepository') private bankRepository: IBankRepository,
+    @inject(EmailConnectionService) private emailConnectionService: IEmailConnectionService,
+  ) {}
 
   async listBanks(): Promise<BankResponseDTO[]> {
     try {
@@ -39,7 +43,7 @@ class BankService implements IBankService {
     }
   }
 
-  async reportSender(senderEmail: string, bankName?: string): Promise<{ matched: boolean; bankName: string | null }> {
+  async reportSender(userId: number, senderEmail: string, bankName?: string): Promise<{ matched: boolean; bankName: string | null }> {
     try {
       const normalized = senderEmail.toLowerCase().trim();
 
@@ -52,10 +56,18 @@ class BankService implements IBankService {
           senderEmail: normalized,
         });
         logger.info(`[Bank] reportSender: matched "${match.bank.name}" for ${normalized}`);
+        this.emailConnectionService.addSenderFilterAndResync(userId, normalized).catch((err) => {
+          logger.error(`[Bank] addSenderFilterAndResync failed for user ${userId}: ${err}`);
+        });
         return { matched: true, bankName: match.bank.name };
       }
 
-      if (!bankName) return { matched: false, bankName: null };
+      if (!bankName) {
+        this.emailConnectionService.addSenderFilterAndResync(userId, normalized).catch((err) => {
+          logger.error(`[Bank] addSenderFilterAndResync failed for user ${userId}: ${err}`);
+        });
+        return { matched: false, bankName: null };
+      }
 
       // 2. Fuzzy name match among existing banks
       const banks = await this.bankRepository.findAll();
@@ -76,6 +88,9 @@ class BankService implements IBankService {
         senderEmail: normalized,
       });
       logger.info(`[Bank] reportSender: registered "${bank.name}" (${bank.shortCode}) for ${normalized}`);
+      this.emailConnectionService.addSenderFilterAndResync(userId, normalized).catch((err) => {
+        logger.error(`[Bank] addSenderFilterAndResync failed for user ${userId}: ${err}`);
+      });
       return { matched: false, bankName: bank.name };
     } catch (error) {
       logger.error(`[Bank] reportSender error - ${error}`);
