@@ -85,6 +85,12 @@ class IrisService implements IIrisService {
       }
     }
 
+    // Build embeddings on first message if they don't exist yet
+    const hasData = await this.irisRepository.hasEmbeddings(userId);
+    if (!hasData) {
+      await this.embeddingService.rebuildForUser(userId);
+    }
+
     // Parallel: fetch conversation history + retrieve relevant context
     const [history, retrievedContext] = await Promise.all([
       this.irisRepository.findRecentMessages(sessionId, CONSTANTS.IRIS_MAX_CONTEXT_MESSAGES),
