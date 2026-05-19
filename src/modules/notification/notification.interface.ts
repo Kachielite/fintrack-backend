@@ -4,7 +4,8 @@ export type NotificationType =
   | 'sync_failed'
   | 'insight_generated'
   | 'budget_warning'
-  | 'budget_exceeded';
+  | 'budget_exceeded'
+  | 'iris_ready';
 
 export interface INotification {
   id: number;

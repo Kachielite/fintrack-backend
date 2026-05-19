@@ -17,6 +17,10 @@ import { IGeneralResponse } from '@/common/types/interface';
 import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { BudgetPeriodEnum } from './budget.enum';
+
+function formatCategoryLabel(slug: string): string {
+  return slug.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 
@@ -523,8 +527,8 @@ Return a JSON object: { "suggestions": [{ "category": string, "suggested_limit":
             this.notificationService.create({
               userId,
               type: 'budget_exceeded',
-              title: `Budget exceeded — ${budget.category}`,
-              body: `You've gone over your ${budget.category} budget for this ${budget.periodType}. Time to review your spending.`,
+              title: `Budget exceeded — ${formatCategoryLabel(budget.category)}`,
+              body: `You've gone over your ${formatCategoryLabel(budget.category)} budget for this ${budget.periodType}. Time to review your spending.`,
               data: { budgetId: budget.id, category: budget.category, percentage: Math.round(percentage) },
             }).catch(() => {});
           }
@@ -535,8 +539,8 @@ Return a JSON object: { "suggestions": [{ "category": string, "suggested_limit":
             this.notificationService.create({
               userId,
               type: 'budget_warning',
-              title: `Heads up — ${budget.category} budget at ${Math.round(percentage)}%`,
-              body: `You've used ${Math.round(percentage)}% of your ${budget.category} budget this ${budget.periodType}. You're getting close.`,
+              title: `Heads up — ${formatCategoryLabel(budget.category)} budget at ${Math.round(percentage)}%`,
+              body: `You've used ${Math.round(percentage)}% of your ${formatCategoryLabel(budget.category)} budget this ${budget.periodType}. You're getting close.`,
               data: { budgetId: budget.id, category: budget.category, percentage: Math.round(percentage) },
             }).catch(() => {});
           }

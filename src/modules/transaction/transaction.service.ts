@@ -114,7 +114,12 @@ class TransactionService implements ITransactionService {
           ? monthlySpends.reduce((s, v) => s + v, 0) / monthlySpends.length
           : 0;
 
-      const vsLastPeriodPct = avgPrevSpend > 0 ? ((totalSpend - avgPrevSpend) / avgPrevSpend) * 100 : null;
+      // Only show comparison when we have ≥2 months of real prior spend; otherwise
+      // a tiny single-month baseline produces absurdly large percentages.
+      const vsLastPeriodPct =
+        monthlySpends.length >= 2
+          ? ((totalSpend - avgPrevSpend) / avgPrevSpend) * 100
+          : null;
 
       const categoryMap = new Map<string, { total: number; count: number }>();
       for (const t of transactions.filter((tx) => tx.amount < 0)) {

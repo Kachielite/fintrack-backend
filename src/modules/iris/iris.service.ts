@@ -12,8 +12,11 @@ import { buildSuggestionPrompt } from './prompt/suggestion-prompt';
 import EmbeddingService, { IEmbeddingService } from './embedding/embedding.service';
 import RetrievalService, { IRetrievalService } from './retrieval/retrieval.service';
 import { ResourceNotFoundException, InternalServerException } from '@/common/exception';
+import { INotificationService } from '@/modules/notification/notification.service';
 
 export interface IIrisService {
+  getStatus(userId: number): Promise<{ ready: boolean }>;
+  initialize(userId: number): Promise<void>;
   createSession(userId: number): Promise<IIrisSession>;
   listSessions(userId: number): Promise<IIrisSession[]>;
   deleteSession(id: number, userId: number): Promise<void>;
@@ -38,8 +41,31 @@ class IrisService implements IIrisService {
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject(EmbeddingService) private embeddingService: IEmbeddingService,
     @inject(RetrievalService) private retrievalService: IRetrievalService,
+    @inject('INotificationService') private notificationService: INotificationService,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
+  }
+
+  async getStatus(userId: number): Promise<{ ready: boolean }> {
+    const ready = await this.irisRepository.hasEmbeddings(userId);
+    return { ready };
+  }
+
+  async initialize(userId: number): Promise<void> {
+    // Run rebuild in background — caller gets an immediate 202
+    this.embeddingService
+      .rebuildForUser(userId)
+      .then(() => {
+        this.notificationService
+          .create({
+            userId,
+            type: 'iris_ready',
+            title: 'Iris is ready',
+            body: 'Your financial data has been loaded. Ask Iris anything.',
+          })
+          .catch(() => {});
+      })
+      .catch((err) => logger.error(`Iris initialize failed for user ${userId}: ${err}`));
   }
 
   async createSession(userId: number): Promise<IIrisSession> {
