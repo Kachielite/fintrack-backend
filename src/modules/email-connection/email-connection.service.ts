@@ -36,6 +36,13 @@ const UNIVERSAL_FILTER_QUERY =
 const GMAIL_LABEL_NAME = 'Bank Transactions';
 const BACKFILL_MAX_MESSAGES = 500;
 
+export class GmailAuthRevokedError extends Error {
+  constructor(public readonly connectionId: number) {
+    super(`Gmail auth revoked for connection ${connectionId} — user must reconnect`);
+    this.name = 'GmailAuthRevokedError';
+  }
+}
+
 export interface IEmailConnectionService {
   getAuthUrl(userId: number): string;
   handleCallback(userId: number, data: GmailCallbackDTO): Promise<EmailConnectionResponseDTO>;
@@ -318,11 +325,28 @@ class EmailConnectionService implements IEmailConnectionService {
     });
 
     if (connection.tokenExpiresAt < new Date()) {
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      const newAccessToken = tokenEncryptionService.encrypt(credentials.access_token!);
-      const newExpiry = new Date(credentials.expiry_date || Date.now() + 3600 * 1000);
-      await this.connectionRepository.updateTokens(connection.id, newAccessToken, newExpiry);
-      oauth2Client.setCredentials(credentials);
+      try {
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        const newAccessToken = tokenEncryptionService.encrypt(credentials.access_token!);
+        const newExpiry = new Date(credentials.expiry_date || Date.now() + 3600 * 1000);
+        await this.connectionRepository.updateTokens(connection.id, newAccessToken, newExpiry);
+        oauth2Client.setCredentials(credentials);
+      } catch (err: any) {
+        const isRevoked =
+          err?.message?.includes('invalid_grant') ||
+          err?.response?.data?.error === 'invalid_grant';
+        if (isRevoked) {
+          await this.connectionRepository.updateStatus(
+            connection.id,
+            ConnectionStatusEnum.REVOKED,
+          );
+          logger.warn(
+            `[Gmail OAuth] invalid_grant for connection ${connection.id} — marked revoked`,
+          );
+          throw new GmailAuthRevokedError(connection.id);
+        }
+        throw err;
+      }
     }
 
     return oauth2Client;

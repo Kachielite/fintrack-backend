@@ -3,9 +3,18 @@ import path from 'path';
 
 const APP_LABEL = 'FinTrack 🚀';
 
+const LEVEL_COLORS: Record<string, string> = {
+  error: '\x1b[31m',
+  warn:  '\x1b[33m',
+  info:  '\x1b[36m',
+  debug: '\x1b[90m',
+};
+const RESET = '\x1b[0m';
+
 const consoleFormat = winston.format.printf(({ level, message, timestamp }) => {
   const time = new Date(timestamp as string).toTimeString().slice(0, 8);
-  return `[${time}] ${APP_LABEL}  ${level}  ${message}`;
+  const color = LEVEL_COLORS[level] ?? '';
+  return `[${time}] ${APP_LABEL}  ${color}${level}${RESET}  ${message}`;
 });
 
 const isProduction = process.env.NODE_ENV === 'production';

@@ -21,6 +21,7 @@ import { ICategory } from '@/modules/category/category.interface';
 import { IBank } from '@/modules/bank/bank.interface';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { getIngestionQueue } from './ingestion.queue';
+import { GmailAuthRevokedError } from '@/modules/email-connection/email-connection.service';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -243,6 +244,26 @@ class IngestionService implements IIngestionService {
         this.budgetService.checkBudgetAlerts(userId).catch(() => {});
       }
     } catch (error) {
+      if (error instanceof GmailAuthRevokedError) {
+        logger.warn(`[Ingestion] Connection ${connectionId} requires re-auth (invalid_grant)`);
+        emit('error', { message: 'Gmail access was revoked — please reconnect your account' });
+        try {
+          const conn = await this.connectionRepository.findByIdOnly(connectionId);
+          if (conn?.userId) {
+            await this.notificationService.create({
+              userId: conn.userId,
+              type: 'sync_failed',
+              title: 'Gmail reconnection required',
+              body: 'Your Gmail access has expired or been revoked. Please reconnect your account to continue syncing.',
+              data: { connectionId, reason: 'auth_revoked' },
+            });
+          }
+        } catch {
+          // ignore notification failure
+        }
+        return;
+      }
+
       logger.error(`[Ingestion] Error polling connection ${connectionId} - ${error}`);
       emit('error', { message: 'Sync failed unexpectedly' });
 
