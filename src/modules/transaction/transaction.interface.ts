@@ -5,6 +5,7 @@ export interface ITransaction {
   userId: number;
   emailConnectionId: number | null;
   bankId: number | null;
+  accountId: number | null;
   parserTemplateId: number | null;
   gmailMessageId: string | null;
   merchant: string;
@@ -33,6 +34,7 @@ export interface ICreateTransaction {
   userId: number;
   emailConnectionId?: number;
   bankId?: number;
+  accountId?: number;
   parserTemplateId?: number;
   gmailMessageId?: string;
   merchant: string;

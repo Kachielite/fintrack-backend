@@ -15,6 +15,7 @@ import EmailConnectionService, {
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 import BudgetService, { IBudgetService } from '@/modules/budget/budget.service';
+import AccountService, { IAccountService } from '@/modules/account/account.service';
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
@@ -86,6 +87,7 @@ class IngestionService implements IIngestionService {
     @inject(NotificationService) private notificationService: INotificationService,
     @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
     @inject(BudgetService) private budgetService: IBudgetService,
+    @inject(AccountService) private accountService: IAccountService,
   ) {}
 
   async pollAllConnections(): Promise<void> {
@@ -512,10 +514,13 @@ class IngestionService implements IIngestionService {
           user.refCurrency,
         );
 
+        const account = await this.accountService.resolveOrCreate(userId, bank.id, currency);
+
         const transaction = await this.transactionRepository.create({
           userId,
           emailConnectionId: connectionId,
           bankId: bank.id,
+          accountId: account.id,
           parserTemplateId: templateResult.templateId,
           gmailMessageId: messageId,
           merchant,
@@ -645,10 +650,13 @@ class IngestionService implements IIngestionService {
 
       const exchangeRate = await this.exchangeRateService.getRate(extractedCurrency, user.refCurrency);
 
+      const account = await this.accountService.resolveOrCreate(userId, bank.id, extractedCurrency);
+
       const transaction = await this.transactionRepository.create({
         userId,
         emailConnectionId: connectionId,
         bankId: bank.id,
+        accountId: account.id,
         gmailMessageId: messageId,
         merchant,
         originalMerchant: rawMerchantAI || this.extractMerchantHeuristic(emailBody, emailSubject),
