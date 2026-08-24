@@ -10,6 +10,7 @@ import { registerAuthDependencies } from '@/modules/auth/auth.dependencies';
 import { registerUserDependencies } from '@/modules/user/user.dependencies';
 import { registerEmailConnectionDependencies } from '@/modules/email-connection/email-connection.dependencies';
 import { registerBankDependencies } from '@/modules/bank/bank.dependencies';
+import { registerAccountDependencies } from '@/modules/account/account.dependencies';
 import { registerParserRuleDependencies } from '@/modules/parser-rule/parser-rule.dependencies';
 import { registerIngestionDependencies } from '@/modules/ingestion/ingestion.dependencies';
 import { registerTransactionDependencies } from '@/modules/transaction/transaction.dependencies';
@@ -56,6 +57,7 @@ export async function configureContainer(): Promise<void> {
   await registerUserDependencies();
   await registerEmailConnectionDependencies();
   await registerBankDependencies();
+  await registerAccountDependencies(); // must come after bank
   await registerParserRuleDependencies();
   await registerNotificationDependencies(); // must come before ingestion
   await registerCategoryDependencies();
