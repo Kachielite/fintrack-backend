@@ -969,12 +969,11 @@ class TransactionService implements ITransactionService {
         });
         await this.transactionRepository.markExcludedFromTotals([transaction.id, linked.id]);
 
-        const category = linkType === 'internal_transfer' ? CategoryEnum.SELF_TRANSFER : CategoryEnum.CURRENCY_CONVERSION;
-        if (transaction.category !== category) {
-          await this.transactionRepository.update(transaction.id, userId, { category });
+        if (transaction.category !== CategoryEnum.SELF_TRANSFER) {
+          await this.transactionRepository.update(transaction.id, userId, { category: CategoryEnum.SELF_TRANSFER });
         }
-        if (linked.category !== category) {
-          await this.transactionRepository.update(linked.id, userId, { category });
+        if (linked.category !== CategoryEnum.SELF_TRANSFER) {
+          await this.transactionRepository.update(linked.id, userId, { category: CategoryEnum.SELF_TRANSFER });
         }
 
         if (remember && transaction.accountId != null && linked.accountId != null) {

@@ -133,7 +133,7 @@ describe('TransactionService.markTransfer', () => {
     assert.equal(credit.category, CategoryEnum.SELF_TRANSFER);
   });
 
-  test('uses currency_conversion as the link type and category for a cross-currency manual pair', async () => {
+  test('uses currency_conversion as the link type but self_transfer as the category for a cross-currency manual pair', async () => {
     const { transactionRepository, transferLinkRepository, service } = setup();
     const debit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.DEBIT, currency: 'USD' });
     const credit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.CREDIT, currency: 'NGN' });
@@ -142,8 +142,9 @@ describe('TransactionService.markTransfer', () => {
     const result = await service.markTransfer(1, debit.id, credit.id);
 
     assert.equal(transferLinkRepository.links[0].linkType, 'currency_conversion');
-    assert.equal(result.category, CategoryEnum.CURRENCY_CONVERSION);
-    assert.equal(credit.category, CategoryEnum.CURRENCY_CONVERSION);
+    // Category is always self_transfer once matched, regardless of currency.
+    assert.equal(result.category, CategoryEnum.SELF_TRANSFER);
+    assert.equal(credit.category, CategoryEnum.SELF_TRANSFER);
   });
 
   test('excludes a transaction alone when no linked_transaction_id is given', async () => {

@@ -195,23 +195,23 @@ class TransferDetectionService implements ITransferDetectionService {
       confidence,
     });
     await this.transactionRepository.markExcludedFromTotals([transaction.id, candidate.id]);
-    await this.tagAsTransferCategory(transaction, linkType);
-    await this.tagAsTransferCategory(candidate, linkType);
+    await this.tagAsTransferCategory(transaction);
+    await this.tagAsTransferCategory(candidate);
     logger.info(`[TransferDetection] Linked transactions ${debit.id} <-> ${credit.id} (${linkType}, ${confidence})`);
   }
 
   /**
-   * Relabels a matched leg's category to reflect what actually happened — a
-   * same-currency self_transfer or a cross-currency currency_conversion — so the
-   * category shown in the UI never contradicts the fact it's excluded from totals.
-   * Leaves `status` untouched: category confidence and transfer confirmation are
-   * deliberately independent (a transfer decision shouldn't silently dismiss the
-   * unrelated "needs a quick look" category-review banner).
+   * Relabels a matched leg's category to self_transfer — money moved between the
+   * user's own accounts, same or cross-currency — so the category shown in the UI
+   * never contradicts the fact it's excluded from totals. The user can still
+   * change it manually. Leaves `status` untouched: category confidence and
+   * transfer confirmation are deliberately independent (a transfer decision
+   * shouldn't silently dismiss the unrelated "needs a quick look" category-review
+   * banner).
    */
-  private async tagAsTransferCategory(transaction: ITransaction, linkType: string): Promise<void> {
-    const category = linkType === 'internal_transfer' ? CategoryEnum.SELF_TRANSFER : CategoryEnum.CURRENCY_CONVERSION;
-    if (transaction.category === category) return;
-    await this.transactionRepository.update(transaction.id, transaction.userId, { category });
+  private async tagAsTransferCategory(transaction: ITransaction): Promise<void> {
+    if (transaction.category === CategoryEnum.SELF_TRANSFER) return;
+    await this.transactionRepository.update(transaction.id, transaction.userId, { category: CategoryEnum.SELF_TRANSFER });
   }
 
   private async excludeSingleLeg(transaction: ITransaction): Promise<void> {

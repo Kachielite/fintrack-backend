@@ -226,9 +226,12 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
     assert.equal(transferLinkRepository.links[0].fromTransactionId, debit.id);
     assert.equal(transferLinkRepository.links[0].toTransactionId, credit.id);
+    // Category is always self_transfer once matched, regardless of currency —
+    // linkType (currency_conversion, asserted above) stays the technical record
+    // of what actually happened, but the user-facing category is unified.
     assert.deepEqual(
       transactionRepository.updates.map((u) => u.data.category).sort(),
-      [CategoryEnum.CURRENCY_CONVERSION, CategoryEnum.CURRENCY_CONVERSION],
+      [CategoryEnum.SELF_TRANSFER, CategoryEnum.SELF_TRANSFER],
     );
   });
 
