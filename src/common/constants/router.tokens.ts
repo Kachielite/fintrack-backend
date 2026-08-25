@@ -3,6 +3,7 @@ export const ROUTER_TOKENS = {
   USER: Symbol.for('UserRouter'),
   EMAIL_CONNECTION: Symbol.for('EmailConnectionRouter'),
   BANK: Symbol.for('BankRouter'),
+  ACCOUNT: Symbol.for('AccountRouter'),
   PARSER_RULE: Symbol.for('ParserRuleRouter'),
   TRANSACTION: Symbol.for('TransactionRouter'),
   EXCHANGE_RATE: Symbol.for('ExchangeRateRouter'),

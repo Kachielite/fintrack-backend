@@ -5,6 +5,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
 } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import TransactionService, { ITransactionService } from './transaction.service';
@@ -18,6 +19,8 @@ import {
   TransactionQueryDTO,
   BulkCategorySchema,
   BulkCategoryDTO,
+  MarkTransferSchema,
+  MarkTransferDTO,
 } from './transaction.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -278,6 +281,115 @@ class TransactionController extends BaseController {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
     return await this.service.getSimilarTransactions(id, userId);
+  }
+
+  /**
+   * @swagger
+   * /transactions/{id}/mark-transfer:
+   *   post:
+   *     tags: [Transactions]
+   *     summary: Manually mark a transaction as a transfer, excluding it from totals
+   *     description: Optionally pair it with the other leg (linked_transaction_id); otherwise it's excluded alone.
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *           example: 42
+   *     requestBody:
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               linked_transaction_id:
+   *                 type: integer
+   *                 example: 43
+   *     responses:
+   *       '200':
+   *         description: Updated transaction
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '404':
+   *         $ref: '#/components/responses/NotFound'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/:id/mark-transfer', { validate: MarkTransferSchema })
+  async markTransfer(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    const { linked_transaction_id } = req.body as MarkTransferDTO;
+    return await this.service.markTransfer(userId, id, linked_transaction_id);
+  }
+
+  /**
+   * @swagger
+   * /transactions/{id}/unmark-transfer:
+   *   post:
+   *     tags: [Transactions]
+   *     summary: Undo a transfer mark, including it back in totals
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *           example: 42
+   *     responses:
+   *       '200':
+   *         description: Updated transaction
+   *       '404':
+   *         $ref: '#/components/responses/NotFound'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/:id/unmark-transfer')
+  async unmarkTransfer(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    return await this.service.unmarkTransfer(userId, id);
+  }
+
+  /**
+   * @swagger
+   * /transactions/{id}/linked-transaction:
+   *   get:
+   *     tags: [Transactions]
+   *     summary: Fetch the paired leg of a transfer, if any
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *           example: 42
+   *     responses:
+   *       '200':
+   *         description: The linked transaction, or null if this transaction isn't paired
+   *       '404':
+   *         $ref: '#/components/responses/NotFound'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Get('/:id/linked-transaction')
+  async getLinkedTransaction(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const id = parseInt(req.params.id as string, 10);
+    return await this.service.getLinkedTransaction(userId, id);
   }
 }
 

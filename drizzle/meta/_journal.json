@@ -71,6 +71,13 @@
       "when": 1747699200000,
       "tag": "0009_iris_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779192000000,
+      "tag": "0010_accounts_transfer_schema",
+      "breakpoints": true
     }
   ]
 }

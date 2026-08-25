@@ -1,7 +1,8 @@
-import { integer, pgTable, real, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgTable, real, serial, text, timestamp } from 'drizzle-orm/pg-core';
 import { UserSchema } from '@/modules/user/user.schema';
 import { EmailConnectionSchema } from '@/modules/email-connection/email-connection.schema';
 import { BankSchema } from '@/modules/bank/bank.schema';
+import { AccountSchema } from '@/modules/account/account.schema';
 
 export const TransactionSchema = pgTable('transactions', {
   id: serial('id').primaryKey(),
@@ -12,6 +13,7 @@ export const TransactionSchema = pgTable('transactions', {
     onDelete: 'set null',
   }),
   bankId: integer('bank_id').references(() => BankSchema.id, { onDelete: 'set null' }),
+  accountId: integer('account_id').references(() => AccountSchema.id, { onDelete: 'set null' }),
   parserTemplateId: integer('parser_template_id'),
   gmailMessageId: text('gmail_message_id'),
   merchant: text('merchant').notNull(),
@@ -28,6 +30,7 @@ export const TransactionSchema = pgTable('transactions', {
   originalCategory: text('original_category'),
   reference: text('reference'),
   balance: real('balance'),
+  excludeFromTotals: boolean('exclude_from_totals').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
