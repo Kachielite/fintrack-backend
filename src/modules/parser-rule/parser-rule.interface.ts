@@ -49,6 +49,7 @@ export interface IBankEmailBlueprint {
   formatSignature: string;
   sampleCount: number;
   driftCount: number;
+  failed: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -15,6 +15,7 @@ import {
 import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
+import { BankIdentificationSource } from '@/modules/bank/bank-matching';
 
 const DEFAULT_CATEGORIES = [
   { slug: 'peer_to_peer_transfer', name: 'Peer-to-Peer Transfer', regex: null },
@@ -56,7 +57,7 @@ export interface BulkReauditResult {
 export interface IParserRuleService {
   listProductionTemplates(): Promise<ParserTemplateResponseDTO[]>;
   getTemplate(id: number): Promise<IParserTemplateWithRules>;
-  auditTemplate(templateId: number): Promise<AuditResult>;
+  auditTemplate(templateId: number, senderConfidence?: BankIdentificationSource): Promise<AuditResult>;
   bulkReauditFailed(): Promise<BulkReauditResult>;
   promoteTemplate(id: number): Promise<ParserTemplateResponseDTO>;
   applyTemplate(
@@ -87,9 +88,10 @@ export interface IParserRuleService {
   ): Promise<string | null>;
   captureBlueprint(
     bankId: number,
-    transactionType: 'debit' | 'credit',
+    transactionType: 'debit' | 'credit' | 'unknown',
     emailSubject: string,
     emailBody: string,
+    failed?: boolean,
   ): Promise<void>;
   recordMatch(templateId: number): Promise<void>;
   recordFailure(templateId: number): Promise<void>;
@@ -132,10 +134,20 @@ class ParserRuleService implements IParserRuleService {
     }
   }
 
-  async auditTemplate(templateId: number): Promise<AuditResult> {
+  async auditTemplate(templateId: number, senderConfidence?: BankIdentificationSource): Promise<AuditResult> {
     try {
       const template = await this.repository.findTemplateById(templateId);
       if (!template) throw new ResourceNotFoundException('Template not found');
+
+      // A template built from a weakly-identified sender needs stronger evidence
+      // before it's trusted without an LLM review. Unknown confidence (manual/bulk
+      // re-audit, no triggering email) is treated as weak, not as strong.
+      const autoPassThreshold =
+        senderConfidence === 'exact_sender_email' || senderConfidence === 'trusted_sender_domain'
+          ? 2
+          : senderConfidence === 'legacy_domain_fallback' || senderConfidence === 'domain_name_hint'
+            ? 3
+            : Infinity; // 'ai_identified' or unknown — never fast-path, always go through the judge
 
       // Run each rule against real blueprint text to get actual match evidence
       const blueprints = await this.repository.findBlueprintsByBank(template.bankId);
@@ -161,7 +173,12 @@ class ParserRuleService implements IParserRuleService {
         } catch {
           // invalid regex — leave matched: false
         }
-        if (matched) {
+        // Amount/balance captures must actually parse as a sane number before
+        // they count toward auto-pass — a matched-but-garbage capture (e.g. "N/A",
+        // a stray label) shouldn't be treated as real evidence of a working rule.
+        const isNumericField = r.field === RuleFieldEnum.AMOUNT || r.field === RuleFieldEnum.BALANCE;
+        const numericallySane = !isNumericField || this.parseNumericSanity(actualMatch) != null;
+        if (matched && numericallySane) {
           totalActuallyMatched++;
           if (r.field === RuleFieldEnum.AMOUNT) amountActuallyMatched = true;
         }
@@ -169,7 +186,7 @@ class ParserRuleService implements IParserRuleService {
       });
 
       // Auto-promote without AI call if real-world matches confirm quality
-      if (amountActuallyMatched && totalActuallyMatched >= 2 && blueprints.length > 0) {
+      if (amountActuallyMatched && totalActuallyMatched >= autoPassThreshold && blueprints.length > 0) {
         await this.repository.updateTemplateStatus(
           templateId,
           RuleStatusEnum.AUDITED,
@@ -237,8 +254,8 @@ Return JSON only in this exact format:
         fieldResults: raw.field_results || [],
       };
 
-      // Override AI fail if real-world evidence shows amount + 2+ fields actually match
-      const effectivePassed = result.passed || (amountActuallyMatched && totalActuallyMatched >= 2);
+      // Override AI fail if real-world evidence meets the confidence-scaled bar
+      const effectivePassed = result.passed || (amountActuallyMatched && totalActuallyMatched >= autoPassThreshold);
 
       await this.repository.updateTemplateStatus(
         templateId,
@@ -588,6 +605,16 @@ Return JSON:
         const rd = ruleData as any;
         const { pattern, flags } = this.sanitizePattern(rd.pattern, rd.flags || 'i');
 
+        // Reject catastrophic-backtracking shapes before this pattern is ever
+        // saved — an AI-written regex runs unsupervised against every future
+        // email from this bank, so a ReDoS pattern here is a production outage.
+        if (this.isUnsafeRegexPattern(pattern)) {
+          logger.warn(
+            `[ParserRule] Rejecting unsafe regex for field ${field} on bank ${bankId} (potential catastrophic backtracking): ${pattern}`,
+          );
+          continue;
+        }
+
         // Pre-test: skip rules that are invalid or don't match any available text
         let matched = false;
         try {
@@ -744,9 +771,10 @@ If none confidently matches, return:
 
   async captureBlueprint(
     bankId: number,
-    transactionType: 'debit' | 'credit',
+    transactionType: 'debit' | 'credit' | 'unknown',
     emailSubject: string,
     emailBody: string,
+    failed = false,
   ): Promise<void> {
     try {
       const sanitizedSubject = this.sanitizeBlueprintText(emailSubject, BLUEPRINT_SUBJECT_MAX_LEN);
@@ -764,6 +792,7 @@ If none confidently matches, return:
           formatSignature,
           sampleCount: 1,
           driftCount: 0,
+          failed,
         });
         return;
       }
@@ -772,6 +801,7 @@ If none confidently matches, return:
         await this.repository.updateBlueprint(existing.id, {
           sampleCount: existing.sampleCount + 1,
           driftCount: 0,
+          failed,
         });
         return;
       }
@@ -784,6 +814,7 @@ If none confidently matches, return:
           formatSignature,
           sampleCount: 1,
           driftCount: 0,
+          failed,
         });
         logger.info(
           `[ParserRule] Replaced ${transactionType} blueprint for bank ${bankId} after detecting format drift`,
@@ -794,6 +825,7 @@ If none confidently matches, return:
       await this.repository.updateBlueprint(existing.id, {
         sampleCount: existing.sampleCount + 1,
         driftCount: nextDriftCount,
+        failed,
       });
     } catch (error) {
       logger.error(
@@ -845,6 +877,39 @@ If none confidently matches, return:
       }
     }
     return { pattern, flags };
+  }
+
+  /** Static catastrophic-backtracking check — not a full ReDoS analyzer, just
+   * the well-known dangerous shapes (nested/quantified groups, overlapping
+   * alternation followed by a quantifier) that account for most real ReDoS bugs. */
+  private isUnsafeRegexPattern(pattern: string): boolean {
+    // A group containing its own quantifier, itself quantified — e.g. (a+)+,
+    // (\d*)+, (x{2,5})*, (a+)? — the classic exponential-backtracking shape.
+    const nestedQuantifier = /\([^()]*[+*][^()]*\)[+*?]|\([^()]*\{\d*,?\d*\}[^()]*\)[+*?]/;
+    if (nestedQuantifier.test(pattern)) return true;
+
+    // Alternation inside a quantified group — e.g. (a|ab)+ — can blow up when
+    // branches share a prefix; flagged conservatively (false positives over
+    // silently shipping a ReDoS-capable pattern).
+    const alternationThenQuantifier = /\([^()]*\|[^()]*\)[+*]/;
+    if (alternationThenQuantifier.test(pattern)) return true;
+
+    return false;
+  }
+
+  /** Mirrors ingestion.service.ts's parsePositiveAmount — a captured amount/balance
+   * value only counts as real evidence if it actually parses as a positive number. */
+  private parseNumericSanity(value: string | null): number | null {
+    if (!value) return null;
+    const cleaned = value
+      .replace(/,/g, '')
+      .replace(/[^0-9.\-]/g, '')
+      .trim();
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    if (!isFinite(parsed)) return null;
+    const abs = Math.abs(parsed);
+    return abs > 0 ? abs : null;
   }
 
   private parseFieldValue(field: RuleFieldEnum, value: string): string | number {

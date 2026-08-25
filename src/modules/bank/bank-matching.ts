@@ -5,6 +5,11 @@ export type DetectionSource =
   | 'trusted_sender_domain'
   | 'legacy_domain_fallback';
 
+// Full set of ways a bank can end up identified for a given email, including
+// the two paths outside bank-matching.ts itself (domain-name heuristic,
+// full AI identification) — used to grade template-audit confidence.
+export type BankIdentificationSource = DetectionSource | 'domain_name_hint' | 'ai_identified';
+
 export interface BankMatch {
   bank: IBank;
   source: DetectionSource;

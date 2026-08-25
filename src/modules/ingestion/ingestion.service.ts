@@ -24,6 +24,9 @@ import { IBank } from '@/modules/bank/bank.interface';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { getIngestionQueue } from './ingestion.queue';
 import { GmailAuthRevokedError } from '@/modules/email-connection/email-connection.service';
+import { BankIdentificationSource } from '@/modules/bank/bank-matching';
+import * as iconv from 'iconv-lite';
+import { convert } from 'html-to-text';
 
 const TRANSACTION_AMOUNT_PATTERN = /\b\d+(?:,\d{3})*(?:\.\d{1,2})?\b/;
 const CURRENCY_PATTERN = /\b(ngn|usd|kes|gbp|eur|zar|ghs)\b|[₦$£€]/i;
@@ -313,6 +316,7 @@ class IngestionService implements IIngestionService {
       const bankMatch = await this.bankRepository.findBySenderEmail(senderEmail);
       let bank = bankMatch?.bank ?? null;
       const domainHintBank = bank ? null : await this.findBankByDomainHint(senderEmail);
+      let bankMatchSource: BankIdentificationSource | undefined = bankMatch?.source;
 
       if (bankMatch) {
         logger.info(
@@ -322,6 +326,7 @@ class IngestionService implements IIngestionService {
 
       if (!bank && domainHintBank) {
         bank = domainHintBank;
+        bankMatchSource = 'domain_name_hint';
         logger.info(
           `[Bank] domain_name_hint: matched "${bank.name}" from ${senderEmail}, messageId=${messageId}`,
         );
@@ -374,6 +379,7 @@ class IngestionService implements IIngestionService {
             `[Bank] AI/domain mismatch for ${senderEmail}: ai=${identified.shortCode}, domain_hint=${domainHintBank.shortCode}; using domain hint`,
           );
           bank = domainHintBank;
+          bankMatchSource = 'domain_name_hint';
         }
 
         if (bank) {
@@ -390,6 +396,7 @@ class IngestionService implements IIngestionService {
             country: identified.country,
             senderEmail,
           });
+          bankMatchSource = 'ai_identified';
         }
       }
 
@@ -465,7 +472,7 @@ class IngestionService implements IIngestionService {
               logger.error(`Failed to record regex failure for template ${templateResult.templateId} - ${err}`);
             });
           });
-          this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject);
+          this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject, bankMatchSource);
         }
         const currency = this.normalizeCurrency(regexResult.currency as string | undefined) || user.refCurrency;
         const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
@@ -579,6 +586,11 @@ class IngestionService implements IIngestionService {
 
       if (!extractedOrFallback) {
         logger.info(`AI extraction returned non-transaction for ${bank.name}, messageId=${messageId}`);
+        try {
+          await this.parserRuleService.captureBlueprint(bank.id, 'unknown', emailSubject, emailBody, true);
+        } catch (err) {
+          logger.error(`Failed to capture failed-extraction blueprint for bank ${bank.id} - ${err}`);
+        }
         await this.ingestionRepository.markProcessed({
           emailConnectionId: connectionId,
           gmailMessageId: messageId,
@@ -594,6 +606,11 @@ class IngestionService implements IIngestionService {
         logger.info(
           `[Ingestion] Extracted transaction has invalid amount for ${bank.name}, messageId=${messageId}; marking as non_transaction`,
         );
+        try {
+          await this.parserRuleService.captureBlueprint(bank.id, normalizedType, emailSubject, emailBody, true);
+        } catch (err) {
+          logger.error(`Failed to capture failed-extraction blueprint for bank ${bank.id} - ${err}`);
+        }
         await this.ingestionRepository.markProcessed({
           emailConnectionId: connectionId,
           gmailMessageId: messageId,
@@ -685,19 +702,20 @@ class IngestionService implements IIngestionService {
         outcome: 'parsed',
         transactionId: transaction.id,
       });
-      setImmediate(() => {
-        this.parserRuleService
-          .captureBlueprint(bank.id, normalizedType, emailSubject, emailBody)
-          .catch((err) => {
-            logger.error(`Failed to capture blueprint for bank ${bank.id} - ${err}`);
-          });
-      });
+      try {
+        await this.parserRuleService.captureBlueprint(bank.id, normalizedType, emailSubject, emailBody);
+      } catch (err) {
+        logger.error(`Failed to capture blueprint for bank ${bank.id} - ${err}`);
+      }
+
       logger.info(
         `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
       );
 
       // Build regex template in background so future emails use fast regex path.
-      this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject);
+      // Sequenced after captureBlueprint (awaited above) so generation always
+      // has this sample available, instead of racing an un-awaited capture.
+      this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject, bankMatchSource);
 
       return true;
     } catch (error) {
@@ -1284,16 +1302,45 @@ class IngestionService implements IIngestionService {
     // Try text/plain first (recursively through nested multipart)
     const plain = this.findMimePart(payload, 'text/plain');
     if (plain) return plain;
-    // Fall back to HTML, stripped to readable text
+    // Fall back to HTML, converted to readable text. html-to-text understands
+    // block/table structure, so adjacent table cells in bank alert templates
+    // stay separated instead of getting glued together (which broke label
+    // matching in extractFieldValue downstream).
     const html = this.findMimePart(payload, 'text/html');
-    if (html) return this.stripHtml(html);
+    if (html) {
+      return convert(html, {
+        wordwrap: false,
+        selectors: [
+          { selector: 'a', options: { ignoreHref: true } },
+          { selector: 'img', format: 'skip' },
+          // Default table handling collapses to a plain block with no cell
+          // spacing — dataTable pads columns so adjacent cells (e.g. a label
+          // cell next to its value cell) don't get glued together.
+          { selector: 'table', format: 'dataTable' },
+        ],
+      });
+    }
     return '';
+  }
+
+  /** Content-Type's charset param for a MIME part, e.g. 'iso-8859-1'. Defaults to utf-8. */
+  private extractCharset(part: any): string {
+    const headers: { name?: string; value?: string }[] = part?.headers || [];
+    const contentType =
+      headers.find((h) => (h.name || '').toLowerCase() === 'content-type')?.value || '';
+    const match = contentType.match(/charset=["']?([^;"'\s]+)/i);
+    return (match ? match[1] : 'utf-8').toLowerCase();
   }
 
   private findMimePart(payload: any, mimeType: string): string {
     if (!payload) return '';
     if (payload.mimeType === mimeType && payload.body?.data) {
-      return Buffer.from(payload.body.data, 'base64').toString('utf8');
+      const buffer = Buffer.from(payload.body.data, 'base64');
+      const charset = this.extractCharset(payload);
+      if (charset !== 'utf-8' && charset !== 'utf8' && charset !== 'us-ascii' && iconv.encodingExists(charset)) {
+        return iconv.decode(buffer, charset);
+      }
+      return buffer.toString('utf8');
     }
     if (payload.parts) {
       for (const part of payload.parts) {
@@ -1304,27 +1351,12 @@ class IngestionService implements IIngestionService {
     return '';
   }
 
-  private stripHtml(html: string): string {
-    return html
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      // named entities
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      // numeric entities — replace with space so currency symbols (e.g. &#8358; = NGN)
-      // don't block amount-pattern matching downstream
-      .replace(/&#x[0-9a-fA-F]+;/g, ' ')
-      .replace(/&#\d+;/g, ' ')
-      // any remaining named entities we don't recognise
-      .replace(/&[a-zA-Z]{2,8};/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-  }
-
-  private scheduleTemplateGeneration(bankId: number, emailBody: string, emailSubject: string): void {
+  private scheduleTemplateGeneration(
+    bankId: number,
+    emailBody: string,
+    emailSubject: string,
+    senderConfidence?: BankIdentificationSource,
+  ): void {
     const now = Date.now();
     const cooldownUntil = this.templateGenerationCooldownUntil.get(bankId) || 0;
     if (this.templateGenerationInFlight.has(bankId) || cooldownUntil > now) {
@@ -1335,7 +1367,7 @@ class IngestionService implements IIngestionService {
     setImmediate(() => {
       this.parserRuleService
         .generateTemplate(bankId, emailBody, emailSubject)
-        .then((template) => this.parserRuleService.auditTemplate(template.id))
+        .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence))
         .then(() => {
           this.templateGenerationCooldownUntil.delete(bankId);
         })
