@@ -20,7 +20,8 @@
     "seed:demo": "ts-node -r tsconfig-paths/register scripts/seed-demo.ts",
     "db:backfill-accounts": "ts-node -r tsconfig-paths/register scripts/backfill-accounts.ts",
     "test:bank-matching": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/bank-matching.test.ts",
-    "test:account-service": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/account-service.test.ts"
+    "test:account-service": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/account-service.test.ts",
+    "test:transfer-detection-service": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/transfer-detection-service.test.ts"
   },
   "keywords": [],
   "author": "",

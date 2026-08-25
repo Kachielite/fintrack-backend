@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, between, count, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, between, count, eq, gte, ilike, inArray, isNotNull, lte, ne, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
 import { BankSchema } from '@/modules/bank/bank.schema';
@@ -29,6 +29,20 @@ export interface ITransactionRepository {
   findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null>;
   findSimilarByMerchant(userId: number, merchant: string, excludeCategory: string, excludeId: number): Promise<ITransaction[]>;
   bulkUpdateCategory(userId: number, ids: number[], category: string): Promise<number>;
+  /**
+   * Unlinked (not yet excluded), opposite-sign transactions on a different
+   * account of the same user, within a time window — candidates for
+   * transfer-detection matching. Currency/amount matching happens in the caller.
+   */
+  findTransferCandidates(input: {
+    userId: number;
+    excludeTransactionId: number;
+    excludeAccountId: number;
+    transactionType: string;
+    windowStart: Date;
+    windowEnd: Date;
+  }): Promise<ITransaction[]>;
+  markExcludedFromTotals(ids: number[]): Promise<void>;
 }
 
 @injectable()
@@ -312,6 +326,39 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       )
       .returning({ id: TransactionSchema.id });
     return result.length;
+  }
+
+  async findTransferCandidates(input: {
+    userId: number;
+    excludeTransactionId: number;
+    excludeAccountId: number;
+    transactionType: string;
+    windowStart: Date;
+    windowEnd: Date;
+  }): Promise<ITransaction[]> {
+    return (await this.db.client
+      .select()
+      .from(TransactionSchema)
+      .where(
+        and(
+          eq(TransactionSchema.userId, input.userId),
+          eq(TransactionSchema.transactionType, input.transactionType),
+          eq(TransactionSchema.excludeFromTotals, false),
+          isNotNull(TransactionSchema.accountId),
+          ne(TransactionSchema.accountId, input.excludeAccountId),
+          ne(TransactionSchema.id, input.excludeTransactionId),
+          between(TransactionSchema.transactionDate, input.windowStart, input.windowEnd),
+        ),
+      )
+      .orderBy(TransactionSchema.transactionDate)) as ITransaction[];
+  }
+
+  async markExcludedFromTotals(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.client
+      .update(TransactionSchema)
+      .set({ excludeFromTotals: true, updatedAt: new Date() })
+      .where(inArray(TransactionSchema.id, ids));
   }
 
   async findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null> {

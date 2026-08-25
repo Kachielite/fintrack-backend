@@ -16,6 +16,7 @@ import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 import BudgetService, { IBudgetService } from '@/modules/budget/budget.service';
 import AccountService, { IAccountService } from '@/modules/account/account.service';
+import TransferDetectionService, { ITransferDetectionService } from '@/modules/account/transfer-detection.service';
 import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { ICategory } from '@/modules/category/category.interface';
@@ -88,6 +89,7 @@ class IngestionService implements IIngestionService {
     @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
     @inject(BudgetService) private budgetService: IBudgetService,
     @inject(AccountService) private accountService: IAccountService,
+    @inject(TransferDetectionService) private transferDetectionService: ITransferDetectionService,
   ) {}
 
   async pollAllConnections(): Promise<void> {
@@ -538,6 +540,8 @@ class IngestionService implements IIngestionService {
           balance: regexResult.balance as number | undefined,
         });
 
+        await this.transferDetectionService.detectForTransaction(transaction);
+
         setImmediate(() => {
           this.parserRuleService.recordMatch(templateResult.templateId).catch((err) => {
             logger.error(`Failed to record regex match for template ${templateResult.templateId} - ${err}`);
@@ -672,6 +676,8 @@ class IngestionService implements IIngestionService {
         reference,
         balance: extractedOrFallback.balance as number | undefined,
       });
+
+      await this.transferDetectionService.detectForTransaction(transaction);
 
       await this.ingestionRepository.markProcessed({
         emailConnectionId: connectionId,
