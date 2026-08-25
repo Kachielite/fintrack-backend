@@ -38,11 +38,19 @@ class AccountService implements IAccountService {
     try {
       const existing = await this.accountRepository.findMatch(userId, bankId, currency);
       if (existing) {
-        // Backfill the mask once we see it, even if the account was first created without one.
-        if (mask && !existing.accountNumberMask) {
-          return await this.accountRepository.setMask(existing.id, mask);
+        let account = existing;
+        // A matching bank/currency account that was deactivated (e.g. emptied out by
+        // an earlier "delete connection data") is seeing a transaction again — surface
+        // it rather than silently reattaching data to a hidden account.
+        if (!account.isActive) {
+          logger.info(`[Account] Reactivating account ${account.id} for user ${userId} on new matching data`);
+          account = await this.accountRepository.update(account.id, userId, { isActive: true });
         }
-        return existing;
+        // Backfill the mask once we see it, even if the account was first created without one.
+        if (mask && !account.accountNumberMask) {
+          account = await this.accountRepository.setMask(account.id, mask);
+        }
+        return account;
       }
 
       const label = await this.buildDefaultLabel(bankId, currency);

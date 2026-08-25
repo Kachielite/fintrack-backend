@@ -169,6 +169,18 @@ describe('AccountService.resolveOrCreate', () => {
     const updated = await service.resolveOrCreate(1, ZENITH.id, 'NGN', '9999');
     assert.equal(updated.accountNumberMask, '1234');
   });
+
+  test('reactivates a deactivated account instead of leaving new data attached to a hidden one', async () => {
+    const { service, accountRepository } = setup();
+    const account = await service.resolveOrCreate(1, ZENITH.id, 'NGN');
+    await accountRepository.update(account.id, 1, { isActive: false });
+
+    const resolved = await service.resolveOrCreate(1, ZENITH.id, 'NGN');
+
+    assert.equal(resolved.id, account.id);
+    assert.equal(resolved.isActive, true);
+    assert.equal(accountRepository.accounts.length, 1);
+  });
 });
 
 describe('AccountService.listAccounts', () => {
