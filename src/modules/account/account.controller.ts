@@ -29,6 +29,12 @@ class AccountController extends BaseController {
    *     responses:
    *       '200':
    *         description: List of accounts
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: array
+   *               items:
+   *                 $ref: '#/components/schemas/Account'
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
    *       '500':
@@ -73,6 +79,10 @@ class AccountController extends BaseController {
    *     responses:
    *       '200':
    *         description: Updated account
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Account'
    *       '400':
    *         $ref: '#/components/responses/BadRequest'
    *       '404':
@@ -104,12 +114,7 @@ class AccountController extends BaseController {
    *         content:
    *           application/json:
    *             schema:
-   *               type: object
-   *               properties:
-   *                 scanned:
-   *                   type: integer
-   *                 linked:
-   *                   type: integer
+   *               $ref: '#/components/schemas/RescanTransfersResult'
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
    *       '500':
