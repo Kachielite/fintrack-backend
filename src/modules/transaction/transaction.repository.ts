@@ -224,6 +224,9 @@ class TransactionRepositoryImpl implements ITransactionRepository {
   }
 
   async findForSummary(userId: number, from: Date, to: Date): Promise<ITransaction[]> {
+    // Every spend/income aggregation point (summary, charts, budgets, insights, Iris)
+    // reads through here, so excluding transfer/conversion legs once at the source
+    // keeps all of them correct without duplicating the filter at each call site.
     return (await this.db.client
       .select()
       .from(TransactionSchema)
@@ -232,6 +235,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
           eq(TransactionSchema.userId, userId),
           gte(TransactionSchema.transactionDate, from),
           lte(TransactionSchema.transactionDate, to),
+          eq(TransactionSchema.excludeFromTotals, false),
         ),
       )) as ITransaction[];
   }

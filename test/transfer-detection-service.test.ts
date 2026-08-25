@@ -32,6 +32,7 @@ function makeTransaction(overrides: Partial<ITransaction> & { userId: number; ac
     originalCategory: null,
     reference: null,
     balance: null,
+    excludeFromTotals: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

@@ -22,6 +22,7 @@ export interface ITransaction {
   originalCategory: string | null;
   reference: string | null;
   balance: number | null;
+  excludeFromTotals: boolean;
   createdAt: Date;
   updatedAt: Date;
   // Joined bank fields — present on getTransaction detail, absent on list queries
