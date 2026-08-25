@@ -173,10 +173,14 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
   }
 
   async findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]> {
+    // Excludes failed captures — these come from extractions that didn't
+    // produce a clean transaction, so they'd corrupt template generation/audit.
     const rows = await this.db.client
       .select()
       .from(BankEmailBlueprintSchema)
-      .where(eq(BankEmailBlueprintSchema.bankId, bankId));
+      .where(
+        and(eq(BankEmailBlueprintSchema.bankId, bankId), eq(BankEmailBlueprintSchema.failed, false)),
+      );
     return rows as IBankEmailBlueprint[];
   }
 
@@ -191,6 +195,7 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
         formatSignature: data.formatSignature!,
         sampleCount: data.sampleCount ?? 1,
         driftCount: data.driftCount ?? 0,
+        failed: data.failed ?? false,
       })
       .returning();
     return row as IBankEmailBlueprint;
@@ -205,6 +210,7 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
         formatSignature: data.formatSignature,
         sampleCount: data.sampleCount,
         driftCount: data.driftCount,
+        failed: data.failed,
         updatedAt: new Date(),
       })
       .where(eq(BankEmailBlueprintSchema.id, id))

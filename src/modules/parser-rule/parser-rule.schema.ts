@@ -1,4 +1,4 @@
-import { integer, pgTable, real, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgTable, real, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
 import { BankSchema } from '@/modules/bank/bank.schema';
 
 export const ParserRuleSchema = pgTable('parser_rules', {
@@ -63,6 +63,11 @@ export const BankEmailBlueprintSchema = pgTable(
     formatSignature: text('format_signature').notNull(),
     sampleCount: integer('sample_count').default(1).notNull(),
     driftCount: integer('drift_count').default(0).notNull(),
+    // True when this sample came from an extraction that failed (non-transaction
+    // or unparseable amount) rather than a successfully-created transaction.
+    // Excluded from the pools that feed template generation/audit so a bad
+    // sample can't silently corrupt regex quality.
+    failed: boolean('failed').default(false).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
