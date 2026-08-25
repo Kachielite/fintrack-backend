@@ -182,6 +182,47 @@ class TransactionController extends BaseController {
 
   /**
    * @swagger
+   * /transactions/daily-spend:
+   *   get:
+   *     tags: [Transactions]
+   *     summary: Daily spend/income for one explicit month
+   *     description: Unlike /chart-data's relative-to-today period, this takes a target year/month so a calendar view can page to any month.
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: query
+   *         name: year
+   *         schema:
+   *           type: integer
+   *           example: 2026
+   *       - in: query
+   *         name: month
+   *         schema:
+   *           type: integer
+   *           minimum: 1
+   *           maximum: 12
+   *           example: 5
+   *     responses:
+   *       '200':
+   *         description: Month totals plus a daily breakdown, all converted to the user's ref currency at the current exchange rate
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/DailySpendResponse'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Get('/daily-spend', { validate: { query: TransactionSummaryQuerySchema } })
+  async getDailySpend(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const query = req.query as any;
+    return await this.service.getDailySpend(userId, query.year, query.month);
+  }
+
+  /**
+   * @swagger
    * /transactions/{id}:
    *   get:
    *     tags: [Transactions]

@@ -1,6 +1,6 @@
 import { inject, injectable } from 'tsyringe';
 import { ITransactionRepository } from './transaction.repository';
-import { ITransaction } from './transaction.interface';
+import { ITransaction, IDailySpendPoint, IDailySpendDetail, IMonthSpendSummary } from './transaction.interface';
 import {
   CorrectTransactionDTO,
   TransactionQueryDTO,
@@ -14,6 +14,7 @@ import { IGeneralResponse, IPagination } from '@/common/types/interface';
 import { BadRequestException, InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { IUserRepository } from '@/modules/user/user.repository';
+import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 
 export interface ITransactionService {
   listTransactions(userId: number, query: TransactionQueryDTO): Promise<IPagination<ITransaction>>;
@@ -23,6 +24,11 @@ export interface ITransactionService {
     month?: number,
   ): Promise<Record<string, unknown>>;
   getChartData(userId: number, period: string): Promise<Record<string, unknown>>;
+  getDailySpend(
+    userId: number,
+    year?: number,
+    month?: number,
+  ): Promise<{ month: IMonthSpendSummary; days: IDailySpendDetail[] }>;
   getTransaction(id: number, userId: number): Promise<ITransaction>;
   correctTransaction(
     id: number,
@@ -45,6 +51,7 @@ class TransactionService implements ITransactionService {
     @inject(ParserRuleService) private parserRuleService: IParserRuleService,
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('ITransferLinkRepository') private transferLinkRepository: ITransferLinkRepository,
+    @inject('IExchangeRateService') private exchangeRateService: IExchangeRateService,
   ) {}
 
   async listTransactions(
@@ -195,17 +202,7 @@ class TransactionService implements ITransactionService {
       const refCurrency = transactions.find((t) => t.refCurrency)?.refCurrency || 'NGN';
 
       // Daily spend
-      const dailyMap = new Map<string, { spend: number; income: number }>();
-      for (const t of transactions) {
-        const key = new Date(t.transactionDate).toISOString().split('T')[0];
-        const e = dailyMap.get(key) || { spend: 0, income: 0 };
-        if (t.amount < 0) e.spend += Math.abs(t.refAmount);
-        else e.income += t.refAmount;
-        dailyMap.set(key, e);
-      }
-      const dailySpend = Array.from(dailyMap.entries())
-        .map(([date, d]) => ({ date, spend: Math.round(d.spend), income: Math.round(d.income) }))
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const dailySpend = this.computeDailySpend(transactions);
 
       // By category
       const totalSpend = transactions.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.refAmount), 0);
@@ -303,6 +300,113 @@ class TransactionService implements ITransactionService {
       logger.error(`Error getting chart data for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to get chart data');
     }
+  }
+
+  /**
+   * Daily spend/income/net for one explicit month, plus the month's totals —
+   * unlike getChartData's period (1m/3m/6m, always relative to today), this
+   * takes a target year/month so a calendar view can page to any month, not
+   * just the current one.
+   *
+   * Every transaction is converted at the CURRENT exchange rate to the
+   * user's CURRENT ref currency, rather than trusting each transaction's
+   * stored refAmount/refCurrency (which reflects whatever the user's ref
+   * currency was at ingestion time). If the user ever changes their ref
+   * currency, or a historical conversion silently fell back to an
+   * unconverted amount, summing stored refAmount directly would mix
+   * incompatible values. Re-converting from the transaction's own currency
+   * at query time, all in one pass with one rate per currency, keeps every
+   * figure in this response internally consistent.
+   */
+  async getDailySpend(
+    userId: number,
+    year?: number,
+    month?: number,
+  ): Promise<{ month: IMonthSpendSummary; days: IDailySpendDetail[] }> {
+    try {
+      const now = new Date();
+      const y = year || now.getFullYear();
+      const m = month !== undefined ? month : now.getMonth() + 1;
+
+      const from = new Date(y, m - 1, 1);
+      const to = new Date(y, m, 0, 23, 59, 59);
+
+      logger.info(`[Transaction] Getting daily spend for user ${userId} (year=${y}, month=${m})`);
+      const [user, transactions] = await Promise.all([
+        this.userRepository.findById(userId),
+        this.transactionRepository.findForSummary(userId, from, to),
+      ]);
+      const refCurrency = user?.refCurrency ?? 'NGN';
+
+      return await this.aggregateDailySpend(transactions, refCurrency);
+    } catch (error) {
+      logger.error(`Error getting daily spend for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to get daily spend');
+    }
+  }
+
+  private async aggregateDailySpend(
+    transactions: ITransaction[],
+    refCurrency: string,
+  ): Promise<{ month: IMonthSpendSummary; days: IDailySpendDetail[] }> {
+    const currencies = [...new Set(transactions.map((t) => t.currency))];
+    const rateEntries = await Promise.all(
+      currencies.map(async (c) => [c, await this.exchangeRateService.getRate(c, refCurrency)] as const),
+    );
+    const rateMap = new Map(rateEntries);
+
+    const dailyMap = new Map<string, { spend: number; income: number }>();
+
+    for (const t of transactions) {
+      const rate = rateMap.get(t.currency) ?? 1;
+      const converted = Math.abs(t.amount) * rate;
+      const key = new Date(t.transactionDate).toISOString().split('T')[0];
+      const e = dailyMap.get(key) || { spend: 0, income: 0 };
+      if (t.amount < 0) {
+        e.spend += converted;
+      } else {
+        e.income += converted;
+      }
+      dailyMap.set(key, e);
+    }
+
+    const days = Array.from(dailyMap.entries())
+      .map(([date, d]) => {
+        const spend = Math.round(d.spend);
+        const income = Math.round(d.income);
+        return { date, spend, income, net: income - spend };
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // Derive month totals from the already-rounded daily figures (not the raw
+    // accumulators) so the displayed month total always equals the sum of the
+    // displayed daily figures — rounding each independently can otherwise drift
+    // by a unit or two.
+    const monthSpendRounded = days.reduce((s, d) => s + d.spend, 0);
+    const monthIncomeRounded = days.reduce((s, d) => s + d.income, 0);
+
+    return {
+      month: {
+        spend: monthSpendRounded,
+        income: monthIncomeRounded,
+        net: monthIncomeRounded - monthSpendRounded,
+      },
+      days,
+    };
+  }
+
+  private computeDailySpend(transactions: ITransaction[]): IDailySpendPoint[] {
+    const dailyMap = new Map<string, { spend: number; income: number }>();
+    for (const t of transactions) {
+      const key = new Date(t.transactionDate).toISOString().split('T')[0];
+      const e = dailyMap.get(key) || { spend: 0, income: 0 };
+      if (t.amount < 0) e.spend += Math.abs(t.refAmount);
+      else e.income += t.refAmount;
+      dailyMap.set(key, e);
+    }
+    return Array.from(dailyMap.entries())
+      .map(([date, d]) => ({ date, spend: Math.round(d.spend), income: Math.round(d.income) }))
+      .sort((a, b) => a.date.localeCompare(b.date));
   }
 
   async getTransaction(id: number, userId: number): Promise<ITransaction> {
