@@ -47,6 +47,8 @@ export interface ITransactionRepository {
   /** Most recent balance the ingestion pipeline captured on this account, if any. */
   findLatestBalance(accountId: number): Promise<{ balance: number; transactionDate: Date } | null>;
   reassignAccount(userId: number, fromAccountId: number, toAccountId: number): Promise<number>;
+  /** Account-attributed, not-yet-excluded transactions for a user, oldest first — rescan candidates. */
+  findUnexcludedForUser(userId: number): Promise<ITransaction[]>;
 }
 
 @injectable()
@@ -398,6 +400,20 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .where(and(eq(TransactionSchema.userId, userId), eq(TransactionSchema.accountId, fromAccountId)))
       .returning({ id: TransactionSchema.id });
     return result.length;
+  }
+
+  async findUnexcludedForUser(userId: number): Promise<ITransaction[]> {
+    return (await this.db.client
+      .select()
+      .from(TransactionSchema)
+      .where(
+        and(
+          eq(TransactionSchema.userId, userId),
+          eq(TransactionSchema.excludeFromTotals, false),
+          isNotNull(TransactionSchema.accountId),
+        ),
+      )
+      .orderBy(TransactionSchema.transactionDate)) as ITransaction[];
   }
 
   async findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null> {

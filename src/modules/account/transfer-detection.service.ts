@@ -4,6 +4,7 @@ import { ITransaction } from '@/modules/transaction/transaction.interface';
 import { TransactionTypeEnum, CategoryEnum } from '@/modules/transaction/transaction.enum';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { ITransferLinkRepository } from './transfer-link.repository';
+import { InternalServerException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 
 // How far apart two legs of the same transfer can be, since alert delivery timing varies by bank.
@@ -21,6 +22,13 @@ export interface ITransferDetectionService {
    * legs from spend/income totals.
    */
   detectForTransaction(transaction: ITransaction): Promise<void>;
+  /**
+   * BE-1.8: idempotent, on-demand "re-scan my transactions for transfers" over a
+   * user's full existing history. Not run automatically during the BE-1.1 migration
+   * or the BE-1.2 account backfill — too expensive/risky at scale to do unconditionally,
+   * so it's a Settings action the user (or an admin, on their behalf) triggers once.
+   */
+  rescanForUser(userId: number): Promise<{ scanned: number; linked: number }>;
 }
 
 @injectable()
@@ -125,6 +133,38 @@ class TransferDetectionService implements ITransferDetectionService {
     });
     await this.transactionRepository.markExcludedFromTotals([transaction.id]);
     logger.info(`[TransferDetection] Excluded unlinked currency_conversion leg ${transaction.id}`);
+  }
+
+  async rescanForUser(userId: number): Promise<{ scanned: number; linked: number }> {
+    try {
+      const transactions = await this.transactionRepository.findUnexcludedForUser(userId);
+
+      // A match excludes both legs; skip a later transaction in this same pass once
+      // an earlier one has already claimed it, so re-running this stays idempotent.
+      const claimed = new Set<number>();
+      let scanned = 0;
+      let linked = 0;
+
+      for (const transaction of transactions) {
+        if (claimed.has(transaction.id)) continue;
+        scanned++;
+
+        await this.detectForTransaction(transaction);
+
+        const link = await this.transferLinkRepository.findByTransactionId(transaction.id);
+        if (link) {
+          linked++;
+          if (link.fromTransactionId !== null) claimed.add(link.fromTransactionId);
+          if (link.toTransactionId !== null) claimed.add(link.toTransactionId);
+        }
+      }
+
+      logger.info(`[TransferDetection] Rescan complete for user ${userId}: ${scanned} scanned, ${linked} linked`);
+      return { scanned, linked };
+    } catch (error) {
+      logger.error(`[TransferDetection] Rescan failed for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to rescan transactions for transfers');
+    }
   }
 }
 

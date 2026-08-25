@@ -39,27 +39,44 @@ function makeTransaction(overrides: Partial<ITransaction> & { userId: number; ac
   };
 }
 
-class FakeTransactionRepository implements Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals'> {
+class FakeTransactionRepository
+  implements Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals' | 'findUnexcludedForUser'>
+{
+  // Used directly by the detectForTransaction tests below.
   candidates: ITransaction[] = [];
   excludedIds: number[] = [];
+  // Used by the rescanForUser tests: a shared pool that findTransferCandidates and
+  // findUnexcludedForUser both search live against, mirroring the real DB filter.
+  store: ITransaction[] = [];
 
-  async findTransferCandidates(): Promise<ITransaction[]> {
-    return this.candidates;
+  async findTransferCandidates(input: {
+    excludeTransactionId: number;
+    excludeAccountId: number;
+    transactionType: string;
+  }): Promise<ITransaction[]> {
+    if (this.store.length === 0) return this.candidates;
+    return this.store.filter(
+      (t) =>
+        t.id !== input.excludeTransactionId &&
+        t.accountId !== input.excludeAccountId &&
+        t.transactionType === input.transactionType &&
+        !t.excludeFromTotals,
+    );
   }
 
   async markExcludedFromTotals(ids: number[]): Promise<void> {
     this.excludedIds.push(...ids);
+    for (const t of this.store) if (ids.includes(t.id)) t.excludeFromTotals = true;
+  }
+
+  async findUnexcludedForUser(): Promise<ITransaction[]> {
+    return this.store.filter((t) => !t.excludeFromTotals);
   }
 }
 
 class FakeTransferLinkRepository implements ITransferLinkRepository {
-  links: Array<{
-    userId: number;
-    fromTransactionId: number | null;
-    toTransactionId: number | null;
-    linkType: string;
-    confidence: string;
-  }> = [];
+  links: ITransferLink[] = [];
+  private nextId = 1;
 
   async create(data: {
     userId: number;
@@ -68,16 +85,19 @@ class FakeTransferLinkRepository implements ITransferLinkRepository {
     linkType: string;
     confidence: string;
   }): Promise<ITransferLink> {
-    this.links.push(data);
-    return { id: this.links.length, createdAt: new Date(), ...data };
+    const link: ITransferLink = { id: this.nextId++, createdAt: new Date(), ...data };
+    this.links.push(link);
+    return link;
   }
 
-  async findByTransactionId(): Promise<ITransferLink | null> {
-    throw new Error('not used by TransferDetectionService');
+  async findByTransactionId(transactionId: number): Promise<ITransferLink | null> {
+    return (
+      this.links.find((l) => l.fromTransactionId === transactionId || l.toTransactionId === transactionId) ?? null
+    );
   }
 
-  async delete(): Promise<void> {
-    throw new Error('not used by TransferDetectionService');
+  async delete(id: number): Promise<void> {
+    this.links = this.links.filter((l) => l.id !== id);
   }
 }
 
@@ -110,13 +130,11 @@ describe('TransferDetectionService.detectForTransaction', () => {
     await service.detectForTransaction(debit);
 
     assert.equal(transferLinkRepository.links.length, 1);
-    assert.deepEqual(transferLinkRepository.links[0], {
-      userId: 1,
-      fromTransactionId: debit.id,
-      toTransactionId: credit.id,
-      linkType: 'internal_transfer',
-      confidence: 'auto_high',
-    });
+    assert.equal(transferLinkRepository.links[0].userId, 1);
+    assert.equal(transferLinkRepository.links[0].fromTransactionId, debit.id);
+    assert.equal(transferLinkRepository.links[0].toTransactionId, credit.id);
+    assert.equal(transferLinkRepository.links[0].linkType, 'internal_transfer');
+    assert.equal(transferLinkRepository.links[0].confidence, 'auto_high');
     assert.deepEqual(transactionRepository.excludedIds.sort(), [debit.id, credit.id].sort());
   });
 
@@ -178,13 +196,11 @@ describe('TransferDetectionService.detectForTransaction', () => {
     await service.detectForTransaction(debit);
 
     assert.equal(transferLinkRepository.links.length, 1);
-    assert.deepEqual(transferLinkRepository.links[0], {
-      userId: 1,
-      fromTransactionId: debit.id,
-      toTransactionId: null,
-      linkType: 'currency_conversion',
-      confidence: 'auto_low',
-    });
+    assert.equal(transferLinkRepository.links[0].userId, 1);
+    assert.equal(transferLinkRepository.links[0].fromTransactionId, debit.id);
+    assert.equal(transferLinkRepository.links[0].toTransactionId, null);
+    assert.equal(transferLinkRepository.links[0].linkType, 'currency_conversion');
+    assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
     assert.deepEqual(transactionRepository.excludedIds, [debit.id]);
   });
 
@@ -211,5 +227,74 @@ describe('TransferDetectionService.detectForTransaction', () => {
     await service.detectForTransaction(debit);
 
     assert.equal(transferLinkRepository.links.length, 0);
+  });
+});
+
+describe('TransferDetectionService.rescanForUser', () => {
+  test('links matching pairs and single-leg conversions across full history in one pass', async () => {
+    const { transactionRepository, service } = setup();
+    const pairDebit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      amount: -1000,
+      transactionType: TransactionTypeEnum.DEBIT,
+      transactionDate: new Date('2026-01-01T00:00:00Z'),
+    });
+    const pairCredit = makeTransaction({
+      userId: 1,
+      accountId: 2,
+      amount: 1000,
+      transactionType: TransactionTypeEnum.CREDIT,
+      transactionDate: new Date('2026-01-01T00:10:00Z'),
+    });
+    const unmatchedConversion = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      category: CategoryEnum.CURRENCY_CONVERSION,
+      transactionType: TransactionTypeEnum.DEBIT,
+      transactionDate: new Date('2026-01-02T00:00:00Z'),
+    });
+    const untouched = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      category: CategoryEnum.UNCATEGORIZED,
+      transactionType: TransactionTypeEnum.DEBIT,
+      transactionDate: new Date('2026-01-03T00:00:00Z'),
+    });
+    transactionRepository.store = [pairDebit, pairCredit, unmatchedConversion, untouched];
+
+    const result = await service.rescanForUser(1);
+
+    // pairCredit is claimed by pairDebit's match and never separately scanned.
+    assert.deepEqual(result, { scanned: 3, linked: 2 });
+    assert.equal(pairDebit.excludeFromTotals, true);
+    assert.equal(pairCredit.excludeFromTotals, true);
+    assert.equal(unmatchedConversion.excludeFromTotals, true);
+    assert.equal(untouched.excludeFromTotals, false);
+  });
+
+  test('is idempotent: a second rescan over already-linked history does nothing further', async () => {
+    const { transactionRepository, service } = setup();
+    const debit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      amount: -1000,
+      transactionType: TransactionTypeEnum.DEBIT,
+      transactionDate: new Date('2026-01-01T00:00:00Z'),
+    });
+    const credit = makeTransaction({
+      userId: 1,
+      accountId: 2,
+      amount: 1000,
+      transactionType: TransactionTypeEnum.CREDIT,
+      transactionDate: new Date('2026-01-01T00:10:00Z'),
+    });
+    transactionRepository.store = [debit, credit];
+
+    const first = await service.rescanForUser(1);
+    assert.deepEqual(first, { scanned: 1, linked: 1 });
+
+    const second = await service.rescanForUser(1);
+    assert.deepEqual(second, { scanned: 0, linked: 0 });
   });
 });

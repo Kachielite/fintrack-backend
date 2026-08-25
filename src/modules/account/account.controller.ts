@@ -1,8 +1,9 @@
 import { inject, injectable } from 'tsyringe';
 import express, { Request } from 'express';
-import { BaseController, Controller, Get, Patch } from '@/common/decorators/controller.decorator';
+import { BaseController, Controller, Get, Patch, Post } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import AccountService, { IAccountService } from './account.service';
+import TransferDetectionService, { ITransferDetectionService } from './transfer-detection.service';
 import { PatchAccountDTO, PatchAccountSchema } from './account.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -12,6 +13,7 @@ class AccountController extends BaseController {
   constructor(
     @inject(ROUTER_TOKENS.ACCOUNT) router: express.Router,
     @inject(AccountService) private readonly accountService: IAccountService,
+    @inject(TransferDetectionService) private readonly transferDetectionService: ITransferDetectionService,
   ) {
     super(router);
   }
@@ -85,6 +87,38 @@ class AccountController extends BaseController {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
     return await this.accountService.updateAccount(userId, id, req.body as PatchAccountDTO);
+  }
+
+  /**
+   * @swagger
+   * /accounts/rescan-transfers:
+   *   post:
+   *     tags: [Accounts]
+   *     summary: Re-scan the user's full transaction history for transfers/conversions
+   *     description: Idempotent — safe to run more than once. Only touches transactions not already excluded from totals.
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '200':
+   *         description: Rescan result
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 scanned:
+   *                   type: integer
+   *                 linked:
+   *                   type: integer
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/rescan-transfers')
+  async rescanTransfers(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.transferDetectionService.rescanForUser(userId);
   }
 }
 
