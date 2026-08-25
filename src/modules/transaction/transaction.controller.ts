@@ -204,13 +204,11 @@ class TransactionController extends BaseController {
    *           example: 5
    *     responses:
    *       '200':
-   *         description: Daily spend/income points for the requested month
+   *         description: Month totals plus a daily breakdown, all converted to the user's ref currency at the current exchange rate
    *         content:
    *           application/json:
    *             schema:
-   *               type: array
-   *               items:
-   *                 $ref: '#/components/schemas/DailySpendPoint'
+   *               $ref: '#/components/schemas/DailySpendResponse'
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
    *       '500':

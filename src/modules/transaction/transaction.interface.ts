@@ -71,3 +71,13 @@ export interface IDailySpendPoint {
   spend: number;
   income: number;
 }
+
+export interface IDailySpendDetail extends IDailySpendPoint {
+  net: number;
+}
+
+export interface IMonthSpendSummary {
+  spend: number;
+  income: number;
+  net: number;
+}

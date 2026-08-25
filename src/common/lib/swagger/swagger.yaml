@@ -440,6 +440,33 @@ components:
         income:
           type: number
           example: 0
+        net:
+          type: number
+          description: income - spend, in the user's ref currency.
+          example: -12500
+
+    MonthSpendSummary:
+      type: object
+      properties:
+        spend:
+          type: number
+          example: 158000
+        income:
+          type: number
+          example: 320000
+        net:
+          type: number
+          example: 162000
+
+    DailySpendResponse:
+      type: object
+      properties:
+        month:
+          $ref: '#/components/schemas/MonthSpendSummary'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailySpendPoint'
 
     CategorySpend:
       type: object

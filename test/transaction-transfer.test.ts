@@ -92,6 +92,7 @@ function setup() {
     {} as any,
     {} as any,
     transferLinkRepository,
+    {} as any,
   );
   return { transactionRepository, transferLinkRepository, service };
 }
