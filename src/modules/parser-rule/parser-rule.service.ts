@@ -47,6 +47,21 @@ export interface IdentifiedBank {
   country: string;
 }
 
+export interface CsvColumnMapping {
+  dateColumn: string;
+  dateFormat: string | null;
+  merchantColumn: string;
+  amountMode: 'single_signed' | 'single_unsigned_with_type' | 'debit_credit_split';
+  amountColumn: string | null;
+  typeColumn: string | null;
+  debitColumn: string | null;
+  creditColumn: string | null;
+  currencyColumn: string | null;
+  defaultCurrency: string | null;
+  referenceColumn: string | null;
+  balanceColumn: string | null;
+}
+
 export interface BulkReauditResult {
   total: number;
   promoted: number;
@@ -86,6 +101,10 @@ export interface IParserRuleService {
     description: string,
     allowedCategories: string[],
   ): Promise<string | null>;
+  detectCsvMapping(
+    headers: string[],
+    sampleRows: Record<string, string>[],
+  ): Promise<CsvColumnMapping | null>;
   captureBlueprint(
     bankId: number,
     transactionType: 'debit' | 'credit' | 'unknown',
@@ -765,6 +784,118 @@ If none confidently matches, return:
         return null;
       }
       logger.error(`Error inferring category from merchant/description - ${error}`);
+      return null;
+    }
+  }
+
+  async detectCsvMapping(
+    headers: string[],
+    sampleRows: Record<string, string>[],
+  ): Promise<CsvColumnMapping | null> {
+    try {
+      if (headers.length === 0) return null;
+      const sample = sampleRows
+        .slice(0, 5)
+        .map((row) => JSON.stringify(row))
+        .join('\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_TEMPLATE,
+        messages: [
+          {
+            role: 'system',
+            content: `You analyze the structure of a CSV export of bank/financial transactions and identify which columns hold which data. Return JSON only.
+
+Bank statement CSVs vary widely:
+- Amount may be a single signed column (negative = debit), a single unsigned column paired with a type/direction column (e.g. "Debit"/"Credit" or "DR"/"CR"), or split into two separate columns (one for debits/withdrawals, one for credits/deposits).
+- Dates can be in many formats — infer the day/month/year order and separator from the sample values.
+- Not every CSV has a currency, reference, or balance column — these are optional. When there's no per-row currency column, look for a currency hint elsewhere — a symbol or code embedded in a column header (e.g. "Amt (NGN)", "Amount ($)") or in the sample values themselves — and report it as a single default currency for the whole file.
+- If the file clearly isn't transaction data (e.g. it's something else entirely), set confident to false.`,
+          },
+          {
+            role: 'user',
+            content: `Column headers: ${JSON.stringify(headers)}
+
+Sample rows (JSON, one per line):
+${sample}
+
+Return JSON in this exact format:
+{
+  "date_column": "<exact header name for the transaction date>",
+  "date_format": "<a pattern like DD/MM/YYYY, MM/DD/YYYY, or YYYY-MM-DD describing the sample values, or null if unclear>",
+  "merchant_column": "<exact header name for description/merchant/narration>",
+  "amount_mode": "single_signed" | "single_unsigned_with_type" | "debit_credit_split",
+  "amount_column": "<exact header name, or null>",
+  "type_column": "<exact header name for a debit/credit indicator, or null>",
+  "debit_column": "<exact header name for the debit/withdrawal amount column, or null>",
+  "credit_column": "<exact header name for the credit/deposit amount column, or null>",
+  "currency_column": "<exact header name, or null if not present>",
+  "default_currency": "<ISO 4217 code guessed from header names/symbols/sample values when there's no currency_column, or null if you can't tell>",
+  "reference_column": "<exact header name, or null>",
+  "balance_column": "<exact header name, or null>",
+  "confident": <true if this mapping is correct, false if the file doesn't look like transaction data>
+}
+
+Every column name in your response must exactly match one of the given headers, or be null.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'detect_csv_mapping',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL_TEMPLATE,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      if (!raw.confident) return null;
+
+      const headerSet = new Set(headers);
+      const resolveColumn = (value: unknown): string | null =>
+        typeof value === 'string' && headerSet.has(value) ? value : null;
+
+      const dateColumn = resolveColumn(raw.date_column);
+      const merchantColumn = resolveColumn(raw.merchant_column);
+      const amountColumn = resolveColumn(raw.amount_column);
+      const debitColumn = resolveColumn(raw.debit_column);
+      const creditColumn = resolveColumn(raw.credit_column);
+      const amountMode: CsvColumnMapping['amountMode'] =
+        raw.amount_mode === 'debit_credit_split' || raw.amount_mode === 'single_unsigned_with_type'
+          ? raw.amount_mode
+          : 'single_signed';
+
+      if (!dateColumn || !merchantColumn) return null;
+      if (amountMode === 'debit_credit_split' && !debitColumn && !creditColumn) return null;
+      if (amountMode !== 'debit_credit_split' && !amountColumn) return null;
+
+      return {
+        dateColumn,
+        dateFormat: typeof raw.date_format === 'string' ? raw.date_format : null,
+        merchantColumn,
+        amountMode,
+        amountColumn,
+        typeColumn: resolveColumn(raw.type_column),
+        debitColumn,
+        creditColumn,
+        currencyColumn: resolveColumn(raw.currency_column),
+        defaultCurrency:
+          typeof raw.default_currency === 'string' && /^[A-Za-z]{3}$/.test(raw.default_currency)
+            ? raw.default_currency.toUpperCase()
+            : null,
+        referenceColumn: resolveColumn(raw.reference_column),
+        balanceColumn: resolveColumn(raw.balance_column),
+      };
+    } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn('Rate-limited while detecting CSV column mapping');
+        throw new InternalServerException('OpenAI rate limit reached while analyzing CSV');
+      }
+      logger.error(`Error detecting CSV column mapping - ${error}`);
       return null;
     }
   }

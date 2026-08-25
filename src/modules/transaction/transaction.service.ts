@@ -8,7 +8,7 @@ import {
   CreateManualTransactionDTO,
 } from './transaction.dto';
 import { parse } from 'csv-parse/sync';
-import { TransactionStatusEnum, TransactionTypeEnum } from './transaction.enum';
+import { TransactionStatusEnum, TransactionTypeEnum, CategoryEnum } from './transaction.enum';
 import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import { ITransferLinkRepository } from '@/modules/account/transfer-link.repository';
@@ -21,6 +21,7 @@ import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 import AccountService, { IAccountService } from '@/modules/account/account.service';
+import { ICategoryRepository } from '@/modules/category/category.repository';
 
 // Extra buffer between a transaction crossing the retention cutoff and it
 // actually being deleted, so the warning notification always has real lead time.
@@ -75,6 +76,7 @@ class TransactionService implements ITransactionService {
     @inject('IExchangeRateService') private exchangeRateService: IExchangeRateService,
     @inject(NotificationService) private notificationService: INotificationService,
     @inject(AccountService) private accountService: IAccountService,
+    @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
   ) {}
 
   async listTransactions(
@@ -646,6 +648,45 @@ class TransactionService implements ITransactionService {
     return lines.join('\n');
   }
 
+  /**
+   * Parses a CSV date value using the AI-detected format hint (e.g.
+   * "DD/MM/YYYY") to resolve ambiguous day/month ordering, falling back to
+   * native Date parsing (handles ISO and most unambiguous formats) when the
+   * hint is missing or doesn't match the value's shape.
+   */
+  private parseCsvDate(value: string, formatHint: string | null): Date | null {
+    const cleaned = value.trim();
+    if (!cleaned) return null;
+
+    if (formatHint) {
+      const valueParts = cleaned.match(/^(\d{1,4})[/\-.](\d{1,2})[/\-.](\d{1,4})/);
+      const formatParts = formatHint.toUpperCase().match(/[DMY]+/g);
+      if (valueParts && formatParts && formatParts.length === 3) {
+        const partByToken: Record<string, string> = {};
+        formatParts.forEach((token, i) => {
+          partByToken[token[0]] = valueParts[i + 1];
+        });
+        const day = partByToken.D;
+        const month = partByToken.M;
+        let year = partByToken.Y;
+        if (day && month && year) {
+          if (year.length === 2) year = `20${year}`;
+          const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+          if (
+            !isNaN(parsed.getTime()) &&
+            parsed.getMonth() === Number(month) - 1 &&
+            parsed.getDate() === Number(day)
+          ) {
+            return parsed;
+          }
+        }
+      }
+    }
+
+    const native = new Date(cleaned);
+    return isNaN(native.getTime()) ? null : native;
+  }
+
   /** Creates a transaction directly from user input, bypassing email ingestion entirely. */
   async createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction> {
     try {
@@ -697,9 +738,14 @@ class TransactionService implements ITransactionService {
   }
 
   /**
-   * Parses an uploaded CSV into transactions, using the same column layout
-   * exportTransactionsCsv produces (date, merchant, category, type, amount,
-   * currency, reference, balance — extra/derived columns are ignored).
+   * Parses an uploaded CSV into transactions. Users can't be expected to
+   * format their export into a fixed column layout, so an AI pass first
+   * looks at the header row + a few sample rows once to figure out which
+   * column is the date, merchant, amount (single signed / debit-credit
+   * split / unsigned-with-type-column), currency, reference, and balance —
+   * then every row is parsed deterministically against that one mapping.
+   * This keeps AI involvement to a single call regardless of file size,
+   * and never lets it read or transcribe amounts itself.
    * Deduped the same way ingestion dedupes, via existsSimilarTransaction.
    */
   async importTransactionsCsv(
@@ -712,14 +758,51 @@ class TransactionService implements ITransactionService {
 
       let records: Record<string, string>[];
       try {
-        records = parse(csv, {
-          columns: (header: string[]) => header.map((h) => h.trim().toLowerCase()),
-          skip_empty_lines: true,
-          trim: true,
-        });
+        records = parse(csv, { columns: true, skip_empty_lines: true, trim: true });
       } catch (parseError) {
         throw new BadRequestException(`Could not parse CSV: ${parseError}`);
       }
+      if (records.length === 0) {
+        throw new BadRequestException('CSV has no data rows');
+      }
+
+      const headers = Object.keys(records[0]);
+      const mapping = await this.parserRuleService.detectCsvMapping(headers, records.slice(0, 5));
+      if (!mapping) {
+        throw new BadRequestException(
+          "Could not figure out this CSV's format — make sure it has columns for date, description, and amount.",
+        );
+      }
+
+      const allCategories = await this.categoryRepository.findAll();
+      const categorySlugs = allCategories.map((c) => c.slug);
+      const categoryCache = new Map<string, string>();
+      let aiCategoryCalls = 0;
+      const AI_CATEGORY_CALL_CAP = 40;
+
+      const resolveRowCategory = async (merchant: string): Promise<string> => {
+        const key = merchant.toLowerCase();
+        const cached = categoryCache.get(key);
+        if (cached) return cached;
+
+        const learned = await this.transactionRepository.findLearnedCategoryForMerchant(userId, merchant);
+        if (learned) {
+          categoryCache.set(key, learned);
+          return learned;
+        }
+
+        if (aiCategoryCalls < AI_CATEGORY_CALL_CAP) {
+          aiCategoryCalls++;
+          const inferred = await this.parserRuleService.inferCategoryFromText(merchant, merchant, categorySlugs);
+          if (inferred) {
+            categoryCache.set(key, inferred);
+            return inferred;
+          }
+        }
+
+        categoryCache.set(key, CategoryEnum.UNCATEGORIZED);
+        return CategoryEnum.UNCATEGORIZED;
+      };
 
       let imported = 0;
       let skippedDuplicates = 0;
@@ -730,28 +813,66 @@ class TransactionService implements ITransactionService {
         const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
         const row = records[i];
         try {
-          const merchant = row.merchant?.trim();
-          const category = row.category?.trim();
-          const typeRaw = row.type?.trim().toLowerCase();
-          const currency = row.currency?.trim().toUpperCase();
-          const dateRaw = row.date?.trim();
-          const amountAbs = Math.abs(parseFloat(row.amount));
+          const merchant = row[mapping.merchantColumn]?.trim();
+          const dateRaw = row[mapping.dateColumn]?.trim();
+          if (!merchant || !dateRaw) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: missing description or date`);
+            continue;
+          }
 
-          if (!merchant || !category || !currency || currency.length !== 3 || !dateRaw || !isFinite(amountAbs) || amountAbs <= 0) {
+          const transactionDate = this.parseCsvDate(dateRaw, mapping.dateFormat);
+          if (!transactionDate) {
             skippedInvalid++;
-            errors.push(`Row ${rowNumber}: missing or invalid required field`);
+            errors.push(`Row ${rowNumber}: could not parse date "${dateRaw}"`);
             continue;
           }
-          const transactionDate = new Date(dateRaw);
-          if (isNaN(transactionDate.getTime())) {
-            skippedInvalid++;
-            errors.push(`Row ${rowNumber}: invalid date`);
-            continue;
+
+          let amountAbs: number;
+          let transactionType: TransactionTypeEnum;
+          if (mapping.amountMode === 'debit_credit_split') {
+            const debitRaw = mapping.debitColumn ? row[mapping.debitColumn]?.trim() : '';
+            const creditRaw = mapping.creditColumn ? row[mapping.creditColumn]?.trim() : '';
+            const debitVal = debitRaw ? Math.abs(parseFloat(debitRaw.replace(/,/g, ''))) : 0;
+            const creditVal = creditRaw ? Math.abs(parseFloat(creditRaw.replace(/,/g, ''))) : 0;
+            if (debitVal > 0) {
+              amountAbs = debitVal;
+              transactionType = TransactionTypeEnum.DEBIT;
+            } else if (creditVal > 0) {
+              amountAbs = creditVal;
+              transactionType = TransactionTypeEnum.CREDIT;
+            } else {
+              skippedInvalid++;
+              errors.push(`Row ${rowNumber}: no debit or credit amount`);
+              continue;
+            }
+          } else {
+            const amountRaw = mapping.amountColumn ? row[mapping.amountColumn]?.trim() : '';
+            const parsed = amountRaw ? parseFloat(amountRaw.replace(/,/g, '')) : NaN;
+            if (!isFinite(parsed) || parsed === 0) {
+              skippedInvalid++;
+              errors.push(`Row ${rowNumber}: missing or invalid amount`);
+              continue;
+            }
+            amountAbs = Math.abs(parsed);
+            if (mapping.amountMode === 'single_unsigned_with_type' && mapping.typeColumn) {
+              const typeRaw = (row[mapping.typeColumn] || '').trim().toLowerCase();
+              transactionType = /credit|deposit|\bcr\b/.test(typeRaw)
+                ? TransactionTypeEnum.CREDIT
+                : TransactionTypeEnum.DEBIT;
+            } else {
+              transactionType = parsed < 0 ? TransactionTypeEnum.DEBIT : TransactionTypeEnum.CREDIT;
+            }
           }
-          const transactionType =
-            typeRaw === TransactionTypeEnum.CREDIT ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT;
-          const reference = row.reference?.trim() || undefined;
-          const balance = row.balance?.trim() ? parseFloat(row.balance) : undefined;
+
+          const currency =
+            (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
+            mapping.defaultCurrency ||
+            user.refCurrency;
+          const reference =
+            (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
+          const balanceRaw = mapping.balanceColumn ? row[mapping.balanceColumn]?.trim() : '';
+          const balance = balanceRaw ? parseFloat(balanceRaw.replace(/,/g, '')) : undefined;
           const signedAmount = transactionType === TransactionTypeEnum.DEBIT ? -amountAbs : amountAbs;
 
           const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
@@ -768,8 +889,9 @@ class TransactionService implements ITransactionService {
             continue;
           }
 
-          const account = await this.accountService.resolveOrCreate(userId, null, currency);
-          const [refAmount, exchangeRateUsed] = await Promise.all([
+          const [category, account, refAmount, exchangeRateUsed] = await Promise.all([
+            resolveRowCategory(merchant),
+            this.accountService.resolveOrCreate(userId, null, currency),
             this.exchangeRateService.convert(amountAbs, currency, user.refCurrency),
             this.exchangeRateService.getRate(currency, user.refCurrency),
           ]);
