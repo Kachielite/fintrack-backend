@@ -42,11 +42,16 @@ function makeTransaction(overrides: Partial<ITransaction> & { userId: number; ac
 }
 
 class FakeTransactionRepository
-  implements Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals' | 'findUnexcludedForUser'>
+  implements
+    Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals' | 'findUnexcludedForUser' | 'update'>
 {
   // Used directly by the detectForTransaction tests below.
   candidates: ITransaction[] = [];
   excludedIds: number[] = [];
+  // Records every update() call — the transaction passed into detectForTransaction
+  // is a bare object, not something registered in `store`/`candidates`, so this is
+  // the only way tests can assert what category a leg was relabeled to.
+  updates: { id: number; data: Partial<ITransaction> }[] = [];
   // Used by the rescanForUser tests: a shared pool that findTransferCandidates and
   // findUnexcludedForUser both search live against, mirroring the real DB filter.
   store: ITransaction[] = [];
@@ -73,6 +78,16 @@ class FakeTransactionRepository
 
   async findUnexcludedForUser(): Promise<ITransaction[]> {
     return this.store.filter((t) => !t.excludeFromTotals);
+  }
+
+  async update(id: number, userId: number, data: Partial<ITransaction>): Promise<ITransaction> {
+    this.updates.push({ id, data });
+    const applyTo = (t: ITransaction) => Object.assign(t, data);
+    const target =
+      this.store.find((t) => t.id === id && t.userId === userId) ??
+      this.candidates.find((t) => t.id === id && t.userId === userId);
+    if (target) applyTo(target);
+    return (target ?? ({ id, userId, ...data } as ITransaction)) as ITransaction;
   }
 }
 
@@ -178,6 +193,10 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].linkType, 'internal_transfer');
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_high');
     assert.deepEqual(transactionRepository.excludedIds.sort(), [debit.id, credit.id].sort());
+    assert.deepEqual(
+      transactionRepository.updates.map((u) => u.data.category).sort(),
+      [CategoryEnum.SELF_TRANSFER, CategoryEnum.SELF_TRANSFER],
+    );
   });
 
   test('links a cross-currency match within FX tolerance as currency_conversion/auto_low when narrations share no name', async () => {
@@ -207,6 +226,10 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
     assert.equal(transferLinkRepository.links[0].fromTransactionId, debit.id);
     assert.equal(transferLinkRepository.links[0].toTransactionId, credit.id);
+    assert.deepEqual(
+      transactionRepository.updates.map((u) => u.data.category).sort(),
+      [CategoryEnum.CURRENCY_CONVERSION, CategoryEnum.CURRENCY_CONVERSION],
+    );
   });
 
   test('upgrades a cross-currency FX-tolerance match to auto_high when both narrations name the same counterparty', async () => {
@@ -324,6 +347,23 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].toTransactionId, null);
     assert.equal(transferLinkRepository.links[0].linkType, 'currency_conversion');
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
+    assert.deepEqual(transactionRepository.excludedIds, [debit.id]);
+  });
+
+  test('excludes an unmatched self_transfer leg alone, even with no counterpart ever ingested', async () => {
+    const { transactionRepository, transferLinkRepository, service } = setup();
+    const debit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      category: CategoryEnum.SELF_TRANSFER,
+      transactionType: TransactionTypeEnum.DEBIT,
+    });
+    transactionRepository.candidates = [];
+
+    await service.detectForTransaction(debit);
+
+    assert.equal(transferLinkRepository.links.length, 1);
+    assert.equal(transferLinkRepository.links[0].linkType, 'internal_transfer');
     assert.deepEqual(transactionRepository.excludedIds, [debit.id]);
   });
 

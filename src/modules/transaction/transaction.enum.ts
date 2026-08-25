@@ -27,6 +27,7 @@ export enum CategoryEnum {
   TRAVEL = 'travel',
   BANK_CHARGES = 'bank_charges',
   CURRENCY_CONVERSION = 'currency_conversion',
+  SELF_TRANSFER = 'self_transfer',
   INVESTMENT = 'investment',
   SAVINGS = 'savings',
   RENT_HOUSING = 'rent_housing',

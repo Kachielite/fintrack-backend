@@ -969,6 +969,14 @@ class TransactionService implements ITransactionService {
         });
         await this.transactionRepository.markExcludedFromTotals([transaction.id, linked.id]);
 
+        const category = linkType === 'internal_transfer' ? CategoryEnum.SELF_TRANSFER : CategoryEnum.CURRENCY_CONVERSION;
+        if (transaction.category !== category) {
+          await this.transactionRepository.update(transaction.id, userId, { category });
+        }
+        if (linked.category !== category) {
+          await this.transactionRepository.update(linked.id, userId, { category });
+        }
+
         if (remember && transaction.accountId != null && linked.accountId != null) {
           await this.transferDetectionService.rememberDecision(
             userId,
@@ -987,6 +995,9 @@ class TransactionService implements ITransactionService {
           confidence: 'user_created',
         });
         await this.transactionRepository.markExcludedFromTotals([transaction.id]);
+        if (transaction.category !== CategoryEnum.SELF_TRANSFER) {
+          await this.transactionRepository.update(transaction.id, userId, { category: CategoryEnum.SELF_TRANSFER });
+        }
       }
 
       return (await this.transactionRepository.findById(id, userId)) as ITransaction;
@@ -1002,19 +1013,21 @@ class TransactionService implements ITransactionService {
       const transaction = await this.transactionRepository.findById(id, userId);
       if (!transaction) throw new ResourceNotFoundException('Transaction not found');
 
-      if (remember && transaction.accountId != null) {
-        const link = await this.transferLinkRepository.findByTransactionId(id);
-        const linkedId = link ? (link.fromTransactionId === id ? link.toTransactionId : link.fromTransactionId) : null;
-        const linked = linkedId !== null ? await this.transactionRepository.findById(linkedId, userId) : null;
-        if (linked?.accountId != null) {
-          await this.transferDetectionService.rememberDecision(
-            userId,
-            transaction.accountId,
-            linked.accountId,
-            'never_transfer',
-          );
-        }
+      const link = await this.transferLinkRepository.findByTransactionId(id);
+      const linkedId = link ? (link.fromTransactionId === id ? link.toTransactionId : link.fromTransactionId) : null;
+      const linked = linkedId !== null ? await this.transactionRepository.findById(linkedId, userId) : null;
+
+      if (remember && transaction.accountId != null && linked?.accountId != null) {
+        await this.transferDetectionService.rememberDecision(
+          userId,
+          transaction.accountId,
+          linked.accountId,
+          'never_transfer',
+        );
       }
+
+      await this.restoreOriginalCategoryIfTransferTagged(transaction);
+      if (linked) await this.restoreOriginalCategoryIfTransferTagged(linked);
 
       await this.clearExistingLink(transaction.id);
 
@@ -1024,6 +1037,22 @@ class TransactionService implements ITransactionService {
       logger.error(`[Transaction] unmarkTransfer error for transaction ${id} - ${error}`);
       throw new InternalServerException('Failed to unmark transaction as transfer');
     }
+  }
+
+  /** Undoes the category relabel applied when a transfer was matched/confirmed, since the user just said it isn't one. */
+  private async restoreOriginalCategoryIfTransferTagged(transaction: ITransaction): Promise<void> {
+    if (transaction.category !== CategoryEnum.SELF_TRANSFER && transaction.category !== CategoryEnum.CURRENCY_CONVERSION) {
+      return;
+    }
+    // If the original guess was itself a transfer category (e.g. the narration
+    // literally said "self transfer" and it was tagged at ingestion), falling back
+    // to it would leave the transaction excluded-looking despite the user's "no".
+    const original = transaction.originalCategory;
+    const restoreTo =
+      original && original !== CategoryEnum.SELF_TRANSFER && original !== CategoryEnum.CURRENCY_CONVERSION
+        ? original
+        : CategoryEnum.UNCATEGORIZED;
+    await this.transactionRepository.update(transaction.id, transaction.userId, { category: restoreTo });
   }
 
   async getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null> {

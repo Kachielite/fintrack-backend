@@ -40,6 +40,10 @@ const FX_TOLERANCE = 0.03;
 const RULE_TRUSTED_FX_TOLERANCE = 0.08;
 // Floating-point/rounding slack when comparing two same-currency amounts.
 const AMOUNT_EPSILON = 0.01;
+// Categories that mean "money moved between the user's own accounts" — a
+// transaction already tagged with one of these gets excluded from totals even
+// when its paired leg can't be found (e.g. the other bank was never connected).
+const TRANSFER_CATEGORIES: Set<string> = new Set([CategoryEnum.CURRENCY_CONVERSION, CategoryEnum.SELF_TRANSFER]);
 
 export interface ITransferDetectionService {
   /**
@@ -85,9 +89,10 @@ class TransferDetectionService implements ITransferDetectionService {
       }
 
       // No paired leg — still worth excluding on its own if it's independently
-      // categorized as a conversion. Never do this for peer_to_peer_transfer:
-      // that's real spend unless it matched another of the user's own accounts above.
-      if (transaction.category === CategoryEnum.CURRENCY_CONVERSION) {
+      // categorized as a self-transfer or conversion. Never do this for
+      // peer_to_peer_transfer: that's real spend unless it matched another of
+      // the user's own accounts above.
+      if (TRANSFER_CATEGORIES.has(transaction.category)) {
         await this.excludeSingleLeg(transaction);
       }
     } catch (error) {
@@ -190,21 +195,38 @@ class TransferDetectionService implements ITransferDetectionService {
       confidence,
     });
     await this.transactionRepository.markExcludedFromTotals([transaction.id, candidate.id]);
+    await this.tagAsTransferCategory(transaction, linkType);
+    await this.tagAsTransferCategory(candidate, linkType);
     logger.info(`[TransferDetection] Linked transactions ${debit.id} <-> ${credit.id} (${linkType}, ${confidence})`);
+  }
+
+  /**
+   * Relabels a matched leg's category to reflect what actually happened — a
+   * same-currency self_transfer or a cross-currency currency_conversion — so the
+   * category shown in the UI never contradicts the fact it's excluded from totals.
+   * Leaves `status` untouched: category confidence and transfer confirmation are
+   * deliberately independent (a transfer decision shouldn't silently dismiss the
+   * unrelated "needs a quick look" category-review banner).
+   */
+  private async tagAsTransferCategory(transaction: ITransaction, linkType: string): Promise<void> {
+    const category = linkType === 'internal_transfer' ? CategoryEnum.SELF_TRANSFER : CategoryEnum.CURRENCY_CONVERSION;
+    if (transaction.category === category) return;
+    await this.transactionRepository.update(transaction.id, transaction.userId, { category });
   }
 
   private async excludeSingleLeg(transaction: ITransaction): Promise<void> {
     const isDebit = transaction.transactionType === TransactionTypeEnum.DEBIT;
+    const linkType = transaction.category === CategoryEnum.SELF_TRANSFER ? 'internal_transfer' : 'currency_conversion';
 
     await this.transferLinkRepository.create({
       userId: transaction.userId,
       fromTransactionId: isDebit ? transaction.id : null,
       toTransactionId: isDebit ? null : transaction.id,
-      linkType: 'currency_conversion',
+      linkType,
       confidence: 'auto_low',
     });
     await this.transactionRepository.markExcludedFromTotals([transaction.id]);
-    logger.info(`[TransferDetection] Excluded unlinked currency_conversion leg ${transaction.id}`);
+    logger.info(`[TransferDetection] Excluded unlinked ${linkType} leg ${transaction.id}`);
   }
 
   async rescanForUser(userId: number): Promise<{ scanned: number; linked: number }> {

@@ -40,7 +40,7 @@ function makeTransaction(overrides: Partial<ITransaction> & { userId: number }):
 }
 
 class FakeTransactionRepository
-  implements Pick<ITransactionRepository, 'findById' | 'markExcludedFromTotals' | 'markIncludedInTotals'>
+  implements Pick<ITransactionRepository, 'findById' | 'markExcludedFromTotals' | 'markIncludedInTotals' | 'update'>
 {
   transactions: ITransaction[] = [];
 
@@ -54,6 +54,13 @@ class FakeTransactionRepository
 
   async markIncludedInTotals(ids: number[]): Promise<void> {
     for (const t of this.transactions) if (ids.includes(t.id)) t.excludeFromTotals = false;
+  }
+
+  async update(id: number, userId: number, data: Partial<ITransaction>): Promise<ITransaction> {
+    const transaction = this.transactions.find((t) => t.id === id && t.userId === userId);
+    if (!transaction) throw new Error(`FakeTransactionRepository.update: transaction ${id} not found`);
+    Object.assign(transaction, data);
+    return transaction;
   }
 }
 
@@ -122,17 +129,21 @@ describe('TransactionService.markTransfer', () => {
       confidence: 'user_created',
       createdAt: transferLinkRepository.links[0].createdAt,
     });
+    assert.equal(result.category, CategoryEnum.SELF_TRANSFER);
+    assert.equal(credit.category, CategoryEnum.SELF_TRANSFER);
   });
 
-  test('uses currency_conversion as the link type for a cross-currency manual pair', async () => {
+  test('uses currency_conversion as the link type and category for a cross-currency manual pair', async () => {
     const { transactionRepository, transferLinkRepository, service } = setup();
     const debit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.DEBIT, currency: 'USD' });
     const credit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.CREDIT, currency: 'NGN' });
     transactionRepository.transactions.push(debit, credit);
 
-    await service.markTransfer(1, debit.id, credit.id);
+    const result = await service.markTransfer(1, debit.id, credit.id);
 
     assert.equal(transferLinkRepository.links[0].linkType, 'currency_conversion');
+    assert.equal(result.category, CategoryEnum.CURRENCY_CONVERSION);
+    assert.equal(credit.category, CategoryEnum.CURRENCY_CONVERSION);
   });
 
   test('excludes a transaction alone when no linked_transaction_id is given', async () => {
@@ -145,6 +156,7 @@ describe('TransactionService.markTransfer', () => {
     assert.equal(result.excludeFromTotals, true);
     assert.deepEqual(transferLinkRepository.links[0].fromTransactionId, debit.id);
     assert.equal(transferLinkRepository.links[0].toTransactionId, null);
+    assert.equal(result.category, CategoryEnum.SELF_TRANSFER);
   });
 
   test('rejects pairing two transactions of the same direction', async () => {
@@ -207,6 +219,57 @@ describe('TransactionService.unmarkTransfer', () => {
     assert.equal(result.excludeFromTotals, false);
     assert.equal(credit.excludeFromTotals, false);
     assert.equal(transferLinkRepository.links.length, 0);
+  });
+
+  test('restores both legs to their original category rather than leaving them tagged self_transfer', async () => {
+    const { transactionRepository, service } = setup();
+    const debit = makeTransaction({
+      userId: 1,
+      transactionType: TransactionTypeEnum.DEBIT,
+      category: CategoryEnum.PEER_TO_PEER_TRANSFER,
+      originalCategory: CategoryEnum.PEER_TO_PEER_TRANSFER,
+    });
+    const credit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.CREDIT });
+    transactionRepository.transactions.push(debit, credit);
+    await service.markTransfer(1, debit.id, credit.id);
+    assert.equal(debit.category, CategoryEnum.SELF_TRANSFER);
+
+    const result = await service.unmarkTransfer(1, debit.id);
+
+    assert.equal(result.category, CategoryEnum.PEER_TO_PEER_TRANSFER);
+    // credit had no originalCategory recorded — falls back to uncategorized.
+    assert.equal(credit.category, CategoryEnum.UNCATEGORIZED);
+  });
+
+  test('falls back to uncategorized when the original category was itself transfer-flavored', async () => {
+    const { transactionRepository, service } = setup();
+    const debit = makeTransaction({
+      userId: 1,
+      transactionType: TransactionTypeEnum.DEBIT,
+      category: CategoryEnum.CURRENCY_CONVERSION,
+      originalCategory: CategoryEnum.CURRENCY_CONVERSION,
+    });
+    const credit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.CREDIT, currency: 'NGN' });
+    transactionRepository.transactions.push(debit, credit);
+    await service.markTransfer(1, debit.id, credit.id);
+
+    const result = await service.unmarkTransfer(1, debit.id);
+
+    assert.equal(result.category, CategoryEnum.UNCATEGORIZED);
+  });
+
+  test('leaves an unrelated category untouched — only reverts a self_transfer/currency_conversion tag', async () => {
+    const { transactionRepository, service } = setup();
+    const debit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.DEBIT });
+    const credit = makeTransaction({ userId: 1, transactionType: TransactionTypeEnum.CREDIT });
+    transactionRepository.transactions.push(debit, credit);
+    await service.markTransfer(1, debit.id, credit.id);
+    // Simulate the user having manually re-categorized it in between.
+    debit.category = CategoryEnum.BUSINESS_PAYMENT;
+
+    const result = await service.unmarkTransfer(1, debit.id);
+
+    assert.equal(result.category, CategoryEnum.BUSINESS_PAYMENT);
   });
 
   test('is a no-op on a transaction that was never marked', async () => {
