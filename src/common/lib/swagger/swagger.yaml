@@ -532,6 +532,30 @@ components:
             type: string
           description: Up to 20 human-readable per-row error messages
 
+    Category:
+      type: object
+      properties:
+        id:
+          type: number
+        name:
+          type: string
+          example: Kids' School Fees
+        slug:
+          type: string
+          example: kids_school_fees_u4
+        icon:
+          type: string
+          nullable: true
+          example: school-outline
+        type:
+          type: string
+          enum: [expense, income]
+        isSystem:
+          type: boolean
+          description: True for the built-in, admin-managed categories — these can't be modified or deleted by users
+        isActive:
+          type: boolean
+
     CategorySpend:
       type: object
       properties:
