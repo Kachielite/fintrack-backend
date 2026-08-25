@@ -6,11 +6,12 @@ import {
   TransactionQueryDTO,
   BulkCategoryDTO,
 } from './transaction.dto';
-import { TransactionStatusEnum } from './transaction.enum';
+import { TransactionStatusEnum, TransactionTypeEnum } from './transaction.enum';
 import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
+import { ITransferLinkRepository } from '@/modules/account/transfer-link.repository';
 import { IGeneralResponse, IPagination } from '@/common/types/interface';
-import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
+import { BadRequestException, InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { IUserRepository } from '@/modules/user/user.repository';
 
@@ -32,6 +33,9 @@ export interface ITransactionService {
   bulkCorrectCategory(userId: number, data: BulkCategoryDTO): Promise<{ updated: number }>;
   getUnverified(userId: number): Promise<ITransaction[]>;
   pruneExpiredTransactions(): Promise<void>;
+  markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction>;
+  unmarkTransfer(userId: number, id: number): Promise<ITransaction>;
+  getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null>;
 }
 
 @injectable()
@@ -40,6 +44,7 @@ class TransactionService implements ITransactionService {
     @inject('ITransactionRepository') private transactionRepository: ITransactionRepository,
     @inject(ParserRuleService) private parserRuleService: IParserRuleService,
     @inject('IUserRepository') private userRepository: IUserRepository,
+    @inject('ITransferLinkRepository') private transferLinkRepository: ITransferLinkRepository,
   ) {}
 
   async listTransactions(
@@ -399,6 +404,103 @@ class TransactionService implements ITransactionService {
     } catch (error) {
       logger.error(`Error pruning transactions - ${error}`);
     }
+  }
+
+  async markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction> {
+    try {
+      const transaction = await this.transactionRepository.findById(id, userId);
+      if (!transaction) throw new ResourceNotFoundException('Transaction not found');
+
+      // Replace any existing link this transaction is already part of, rather than layering a second one on top.
+      await this.clearExistingLink(transaction.id);
+
+      if (linkedTransactionId !== undefined) {
+        const linked = await this.transactionRepository.findById(linkedTransactionId, userId);
+        if (!linked) throw new ResourceNotFoundException('Linked transaction not found');
+        if (linked.id === transaction.id) {
+          throw new BadRequestException('A transaction cannot be linked to itself');
+        }
+        if (linked.transactionType === transaction.transactionType) {
+          throw new BadRequestException('Linked transactions must be opposite in direction (one debit, one credit)');
+        }
+        await this.clearExistingLink(linked.id);
+
+        const debit = transaction.transactionType === TransactionTypeEnum.DEBIT ? transaction : linked;
+        const credit = debit === transaction ? linked : transaction;
+        const linkType = transaction.currency === linked.currency ? 'internal_transfer' : 'currency_conversion';
+
+        await this.transferLinkRepository.create({
+          userId,
+          fromTransactionId: debit.id,
+          toTransactionId: credit.id,
+          linkType,
+          confidence: 'user_created',
+        });
+        await this.transactionRepository.markExcludedFromTotals([transaction.id, linked.id]);
+      } else {
+        const isDebit = transaction.transactionType === TransactionTypeEnum.DEBIT;
+        await this.transferLinkRepository.create({
+          userId,
+          fromTransactionId: isDebit ? transaction.id : null,
+          toTransactionId: isDebit ? null : transaction.id,
+          linkType: 'internal_transfer',
+          confidence: 'user_created',
+        });
+        await this.transactionRepository.markExcludedFromTotals([transaction.id]);
+      }
+
+      return (await this.transactionRepository.findById(id, userId)) as ITransaction;
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException || error instanceof BadRequestException) throw error;
+      logger.error(`[Transaction] markTransfer error for transaction ${id} - ${error}`);
+      throw new InternalServerException('Failed to mark transaction as transfer');
+    }
+  }
+
+  async unmarkTransfer(userId: number, id: number): Promise<ITransaction> {
+    try {
+      const transaction = await this.transactionRepository.findById(id, userId);
+      if (!transaction) throw new ResourceNotFoundException('Transaction not found');
+
+      await this.clearExistingLink(transaction.id);
+
+      return (await this.transactionRepository.findById(id, userId)) as ITransaction;
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`[Transaction] unmarkTransfer error for transaction ${id} - ${error}`);
+      throw new InternalServerException('Failed to unmark transaction as transfer');
+    }
+  }
+
+  async getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null> {
+    try {
+      const transaction = await this.transactionRepository.findById(id, userId);
+      if (!transaction) throw new ResourceNotFoundException('Transaction not found');
+
+      const link = await this.transferLinkRepository.findByTransactionId(id);
+      if (!link) return null;
+
+      const linkedId = link.fromTransactionId === id ? link.toTransactionId : link.fromTransactionId;
+      if (linkedId === null) return null;
+
+      return await this.transactionRepository.findById(linkedId, userId);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`[Transaction] getLinkedTransaction error for transaction ${id} - ${error}`);
+      throw new InternalServerException('Failed to fetch linked transaction');
+    }
+  }
+
+  /** Removes any existing transfer_links row this transaction is part of and un-excludes both its legs. */
+  private async clearExistingLink(transactionId: number): Promise<void> {
+    const existing = await this.transferLinkRepository.findByTransactionId(transactionId);
+    if (!existing) return;
+
+    const legIds = [existing.fromTransactionId, existing.toTransactionId].filter(
+      (x): x is number => x !== null,
+    );
+    await this.transferLinkRepository.delete(existing.id);
+    await this.transactionRepository.markIncludedInTotals(legIds);
   }
 }
 

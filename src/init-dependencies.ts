@@ -27,6 +27,7 @@ import AuthController from '@/modules/auth/auth.controller';
 import UserController from '@/modules/user/user.controller';
 import EmailConnectionController from '@/modules/email-connection/email-connection.controller';
 import BankController from '@/modules/bank/bank.controller';
+import AccountController from '@/modules/account/account.controller';
 import ParserRuleController from '@/modules/parser-rule/parser-rule.controller';
 import TransactionController from '@/modules/transaction/transaction.controller';
 import ExchangeRateController from '@/modules/exchange-rate/exchange-rate.controller';
@@ -75,6 +76,7 @@ export async function configureContainer(): Promise<void> {
   container.resolve(UserController);
   container.resolve(EmailConnectionController);
   container.resolve(BankController);
+  container.resolve(AccountController);
   container.resolve(ParserRuleController);
   container.resolve(TransactionController);
   container.resolve(ExchangeRateController);

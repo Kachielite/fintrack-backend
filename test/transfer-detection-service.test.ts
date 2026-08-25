@@ -71,6 +71,14 @@ class FakeTransferLinkRepository implements ITransferLinkRepository {
     this.links.push(data);
     return { id: this.links.length, createdAt: new Date(), ...data };
   }
+
+  async findByTransactionId(): Promise<ITransferLink | null> {
+    throw new Error('not used by TransferDetectionService');
+  }
+
+  async delete(): Promise<void> {
+    throw new Error('not used by TransferDetectionService');
+  }
 }
 
 class FakeExchangeRateService implements Pick<IExchangeRateService, 'getRate'> {

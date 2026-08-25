@@ -14,6 +14,9 @@ export interface IAccountRepository {
     accountNumberMask?: string | null;
   }): Promise<IAccount>;
   setMask(id: number, mask: string): Promise<IAccount>;
+  findAllByUser(userId: number): Promise<IAccount[]>;
+  findById(id: number, userId: number): Promise<IAccount | null>;
+  update(id: number, userId: number, data: { label?: string; isActive?: boolean }): Promise<IAccount>;
 }
 
 @injectable()
@@ -60,6 +63,32 @@ class AccountRepositoryImpl implements IAccountRepository {
       .update(AccountSchema)
       .set({ accountNumberMask: mask, updatedAt: new Date() })
       .where(eq(AccountSchema.id, id))
+      .returning();
+    return updated[0] as IAccount;
+  }
+
+  async findAllByUser(userId: number): Promise<IAccount[]> {
+    return (await this.db.client
+      .select()
+      .from(AccountSchema)
+      .where(and(eq(AccountSchema.userId, userId), eq(AccountSchema.isActive, true)))
+      .orderBy(AccountSchema.createdAt)) as IAccount[];
+  }
+
+  async findById(id: number, userId: number): Promise<IAccount | null> {
+    const rows = await this.db.client
+      .select()
+      .from(AccountSchema)
+      .where(and(eq(AccountSchema.id, id), eq(AccountSchema.userId, userId)))
+      .limit(1);
+    return (rows[0] as IAccount) ?? null;
+  }
+
+  async update(id: number, userId: number, data: { label?: string; isActive?: boolean }): Promise<IAccount> {
+    const updated = await this.db.client
+      .update(AccountSchema)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(AccountSchema.id, id), eq(AccountSchema.userId, userId)))
       .returning();
     return updated[0] as IAccount;
   }

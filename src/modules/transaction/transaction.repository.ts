@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, between, count, eq, gte, ilike, inArray, isNotNull, lte, ne, or, sql } from 'drizzle-orm';
+import { and, between, count, desc, eq, gte, ilike, inArray, isNotNull, lte, ne, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { TransactionSchema } from './transaction.schema';
 import { BankSchema } from '@/modules/bank/bank.schema';
@@ -43,6 +43,10 @@ export interface ITransactionRepository {
     windowEnd: Date;
   }): Promise<ITransaction[]>;
   markExcludedFromTotals(ids: number[]): Promise<void>;
+  markIncludedInTotals(ids: number[]): Promise<void>;
+  /** Most recent balance the ingestion pipeline captured on this account, if any. */
+  findLatestBalance(accountId: number): Promise<{ balance: number; transactionDate: Date } | null>;
+  reassignAccount(userId: number, fromAccountId: number, toAccountId: number): Promise<number>;
 }
 
 @injectable()
@@ -102,6 +106,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
         originalCategory: TransactionSchema.originalCategory,
         reference: TransactionSchema.reference,
         balance: TransactionSchema.balance,
+        excludeFromTotals: TransactionSchema.excludeFromTotals,
         createdAt: TransactionSchema.createdAt,
         updatedAt: TransactionSchema.updatedAt,
         bankName: BankSchema.name,
@@ -159,6 +164,7 @@ class TransactionRepositoryImpl implements ITransactionRepository {
         originalCategory: TransactionSchema.originalCategory,
         reference: TransactionSchema.reference,
         balance: TransactionSchema.balance,
+        excludeFromTotals: TransactionSchema.excludeFromTotals,
         createdAt: TransactionSchema.createdAt,
         updatedAt: TransactionSchema.updatedAt,
         bankName: BankSchema.name,
@@ -363,6 +369,35 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .update(TransactionSchema)
       .set({ excludeFromTotals: true, updatedAt: new Date() })
       .where(inArray(TransactionSchema.id, ids));
+  }
+
+  async markIncludedInTotals(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.client
+      .update(TransactionSchema)
+      .set({ excludeFromTotals: false, updatedAt: new Date() })
+      .where(inArray(TransactionSchema.id, ids));
+  }
+
+  async findLatestBalance(accountId: number): Promise<{ balance: number; transactionDate: Date } | null> {
+    const rows = await this.db.client
+      .select({ balance: TransactionSchema.balance, transactionDate: TransactionSchema.transactionDate })
+      .from(TransactionSchema)
+      .where(and(eq(TransactionSchema.accountId, accountId), isNotNull(TransactionSchema.balance)))
+      .orderBy(desc(TransactionSchema.transactionDate))
+      .limit(1);
+    const row = rows[0];
+    if (!row || row.balance == null) return null;
+    return { balance: row.balance, transactionDate: row.transactionDate };
+  }
+
+  async reassignAccount(userId: number, fromAccountId: number, toAccountId: number): Promise<number> {
+    const result = await this.db.client
+      .update(TransactionSchema)
+      .set({ accountId: toAccountId, updatedAt: new Date() })
+      .where(and(eq(TransactionSchema.userId, userId), eq(TransactionSchema.accountId, fromAccountId)))
+      .returning({ id: TransactionSchema.id });
+    return result.length;
   }
 
   async findLearnedCategoryForMerchant(userId: number, merchant: string): Promise<string | null> {
