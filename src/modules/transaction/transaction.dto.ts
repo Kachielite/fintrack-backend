@@ -42,3 +42,21 @@ export const MarkTransferSchema = z.object({
   linked_transaction_id: z.number().int().positive().optional(),
 });
 export type MarkTransferDTO = z.infer<typeof MarkTransferSchema>;
+
+export const CreateManualTransactionSchema = z.object({
+  merchant: z.string().min(1),
+  category: z.string().min(1),
+  transaction_type: z.nativeEnum(TransactionTypeEnum),
+  amount: z.number().positive(),
+  currency: z.string().length(3),
+  transaction_date: z.string().datetime(),
+  account_id: z.number().int().positive().optional(),
+  reference: z.string().optional(),
+  balance: z.number().optional(),
+});
+export type CreateManualTransactionDTO = z.infer<typeof CreateManualTransactionSchema>;
+
+export const ImportTransactionsCsvSchema = z.object({
+  csv: z.string().min(1),
+});
+export type ImportTransactionsCsvDTO = z.infer<typeof ImportTransactionsCsvSchema>;

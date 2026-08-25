@@ -94,6 +94,7 @@ function setup() {
     transferLinkRepository,
     {} as any,
     {} as any,
+    {} as any,
   );
   return { transactionRepository, transferLinkRepository, service };
 }

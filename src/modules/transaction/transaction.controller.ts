@@ -22,6 +22,10 @@ import {
   BulkCategoryDTO,
   MarkTransferSchema,
   MarkTransferDTO,
+  CreateManualTransactionSchema,
+  CreateManualTransactionDTO,
+  ImportTransactionsCsvSchema,
+  ImportTransactionsCsvDTO,
 } from './transaction.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -104,6 +108,80 @@ class TransactionController extends BaseController {
   async listTransactions(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     return await this.service.listTransactions(userId, req.query as unknown as TransactionQueryDTO);
+  }
+
+  /**
+   * @swagger
+   * /transactions:
+   *   post:
+   *     tags: [Transactions]
+   *     summary: Create a transaction directly (manual entry, bypassing email ingestion)
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/CreateManualTransaction'
+   *     responses:
+   *       '201':
+   *         description: The created transaction
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Transaction'
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/', { validate: CreateManualTransactionSchema, statusCode: 201 })
+  async createManualTransaction(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.service.createManualTransaction(userId, req.body as CreateManualTransactionDTO);
+  }
+
+  /**
+   * @swagger
+   * /transactions/import:
+   *   post:
+   *     tags: [Transactions]
+   *     summary: Bulk-import transactions from a CSV (same column layout as GET /transactions/export)
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [csv]
+   *             properties:
+   *               csv:
+   *                 type: string
+   *                 description: Raw CSV content with a header row (date, merchant, category, type, amount, currency, reference, balance)
+   *     responses:
+   *       '200':
+   *         description: Import result
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ImportResult'
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/import', { validate: ImportTransactionsCsvSchema })
+  async importTransactions(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const { csv } = req.body as ImportTransactionsCsvDTO;
+    return await this.service.importTransactionsCsv(userId, csv);
   }
 
   /**
