@@ -483,6 +483,55 @@ components:
           type: string
           format: date-time
 
+    CreateManualTransaction:
+      type: object
+      required: [merchant, category, transaction_type, amount, currency, transaction_date]
+      properties:
+        merchant:
+          type: string
+          example: Coffee shop
+        category:
+          type: string
+          example: dining
+        transaction_type:
+          type: string
+          enum: [debit, credit]
+        amount:
+          type: number
+          description: Always positive — sign is derived from transaction_type
+          example: 2500
+        currency:
+          type: string
+          example: NGN
+        transaction_date:
+          type: string
+          format: date-time
+        account_id:
+          type: number
+          description: Existing account to attach this to. Omit to auto-resolve/create one for the given currency.
+        reference:
+          type: string
+        balance:
+          type: number
+
+    ImportResult:
+      type: object
+      properties:
+        imported:
+          type: number
+          example: 42
+        skippedDuplicates:
+          type: number
+          example: 3
+        skippedInvalid:
+          type: number
+          example: 1
+        errors:
+          type: array
+          items:
+            type: string
+          description: Up to 20 human-readable per-row error messages
+
     CategorySpend:
       type: object
       properties:

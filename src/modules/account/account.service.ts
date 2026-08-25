@@ -9,13 +9,15 @@ import logger from '@/common/lib/logger';
 
 export interface IAccountService {
   /**
-   * Finds the account a newly-parsed transaction belongs to, or creates one.
-   * Accounts are, for now, entirely email-driven: there is no user-initiated
-   * account creation, only resolution from what ingestion observes.
+   * Finds the account a transaction belongs to, or creates one. Originally
+   * only driven by ingestion observing a (bank, currency) pair; also used by
+   * manual transaction entry when the user doesn't pick an existing account.
    */
   resolveOrCreate(userId: number, bankId: number | null, currency: string, mask?: string | null): Promise<IAccount>;
   listAccounts(userId: number): Promise<AccountResponseDTO[]>;
   updateAccount(userId: number, id: number, data: PatchAccountDTO): Promise<AccountResponseDTO>;
+  /** Raw account lookup scoped to the owning user — null if it doesn't exist or belongs to someone else. */
+  findOwnedAccount(userId: number, accountId: number): Promise<IAccount | null>;
 }
 
 @injectable()
@@ -50,6 +52,10 @@ class AccountService implements IAccountService {
       logger.error(`[Account] resolveOrCreate error for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to resolve account');
     }
+  }
+
+  async findOwnedAccount(userId: number, accountId: number): Promise<IAccount | null> {
+    return await this.accountRepository.findById(accountId, userId);
   }
 
   async listAccounts(userId: number): Promise<AccountResponseDTO[]> {

@@ -5,7 +5,9 @@ import {
   CorrectTransactionDTO,
   TransactionQueryDTO,
   BulkCategoryDTO,
+  CreateManualTransactionDTO,
 } from './transaction.dto';
+import { parse } from 'csv-parse/sync';
 import { TransactionStatusEnum, TransactionTypeEnum } from './transaction.enum';
 import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
@@ -18,6 +20,7 @@ import { IUser } from '@/modules/user/user.interface';
 import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
+import AccountService, { IAccountService } from '@/modules/account/account.service';
 
 // Extra buffer between a transaction crossing the retention cutoff and it
 // actually being deleted, so the warning notification always has real lead time.
@@ -55,6 +58,11 @@ export interface ITransactionService {
     cutoffDate: string;
   }>;
   exportTransactionsCsv(userId: number): Promise<string>;
+  createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction>;
+  importTransactionsCsv(
+    userId: number,
+    csv: string,
+  ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }>;
 }
 
 @injectable()
@@ -66,6 +74,7 @@ class TransactionService implements ITransactionService {
     @inject('ITransferLinkRepository') private transferLinkRepository: ITransferLinkRepository,
     @inject('IExchangeRateService') private exchangeRateService: IExchangeRateService,
     @inject(NotificationService) private notificationService: INotificationService,
+    @inject(AccountService) private accountService: IAccountService,
   ) {}
 
   async listTransactions(
@@ -635,6 +644,168 @@ class TransactionService implements ITransactionService {
       lines.push(row.map(escape).join(','));
     }
     return lines.join('\n');
+  }
+
+  /** Creates a transaction directly from user input, bypassing email ingestion entirely. */
+  async createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction> {
+    try {
+      const user = await this.userRepository.findById(userId);
+      if (!user) throw new ResourceNotFoundException('User not found');
+
+      const currency = data.currency.toUpperCase();
+      let accountId: number | undefined;
+      if (data.account_id) {
+        const account = await this.accountService.findOwnedAccount(userId, data.account_id);
+        if (!account) throw new ResourceNotFoundException('Account not found');
+        accountId = account.id;
+      } else {
+        const account = await this.accountService.resolveOrCreate(userId, null, currency);
+        accountId = account.id;
+      }
+
+      const amountAbs = Math.abs(data.amount);
+      const signedAmount = data.transaction_type === TransactionTypeEnum.DEBIT ? -amountAbs : amountAbs;
+      const [refAmount, exchangeRateUsed] = await Promise.all([
+        this.exchangeRateService.convert(amountAbs, currency, user.refCurrency),
+        this.exchangeRateService.getRate(currency, user.refCurrency),
+      ]);
+
+      const transaction = await this.transactionRepository.create({
+        userId,
+        accountId,
+        merchant: data.merchant,
+        category: data.category,
+        transactionType: data.transaction_type,
+        amount: signedAmount,
+        currency,
+        refAmount,
+        refCurrency: user.refCurrency,
+        exchangeRateUsed,
+        transactionDate: new Date(data.transaction_date),
+        // Manually entered by the user themselves — no AI confidence to verify.
+        status: TransactionStatusEnum.VERIFIED,
+        reference: data.reference,
+        balance: data.balance,
+      });
+
+      return transaction;
+    } catch (error) {
+      if (error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error creating manual transaction for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to create transaction');
+    }
+  }
+
+  /**
+   * Parses an uploaded CSV into transactions, using the same column layout
+   * exportTransactionsCsv produces (date, merchant, category, type, amount,
+   * currency, reference, balance — extra/derived columns are ignored).
+   * Deduped the same way ingestion dedupes, via existsSimilarTransaction.
+   */
+  async importTransactionsCsv(
+    userId: number,
+    csv: string,
+  ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }> {
+    try {
+      const user = await this.userRepository.findById(userId);
+      if (!user) throw new ResourceNotFoundException('User not found');
+
+      let records: Record<string, string>[];
+      try {
+        records = parse(csv, {
+          columns: (header: string[]) => header.map((h) => h.trim().toLowerCase()),
+          skip_empty_lines: true,
+          trim: true,
+        });
+      } catch (parseError) {
+        throw new BadRequestException(`Could not parse CSV: ${parseError}`);
+      }
+
+      let imported = 0;
+      let skippedDuplicates = 0;
+      let skippedInvalid = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < records.length; i++) {
+        const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
+        const row = records[i];
+        try {
+          const merchant = row.merchant?.trim();
+          const category = row.category?.trim();
+          const typeRaw = row.type?.trim().toLowerCase();
+          const currency = row.currency?.trim().toUpperCase();
+          const dateRaw = row.date?.trim();
+          const amountAbs = Math.abs(parseFloat(row.amount));
+
+          if (!merchant || !category || !currency || currency.length !== 3 || !dateRaw || !isFinite(amountAbs) || amountAbs <= 0) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: missing or invalid required field`);
+            continue;
+          }
+          const transactionDate = new Date(dateRaw);
+          if (isNaN(transactionDate.getTime())) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: invalid date`);
+            continue;
+          }
+          const transactionType =
+            typeRaw === TransactionTypeEnum.CREDIT ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT;
+          const reference = row.reference?.trim() || undefined;
+          const balance = row.balance?.trim() ? parseFloat(row.balance) : undefined;
+          const signedAmount = transactionType === TransactionTypeEnum.DEBIT ? -amountAbs : amountAbs;
+
+          const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
+            userId,
+            currency,
+            amountAbs,
+            transactionType,
+            reference,
+            merchant,
+            transactionDate,
+          });
+          if (isDuplicate) {
+            skippedDuplicates++;
+            continue;
+          }
+
+          const account = await this.accountService.resolveOrCreate(userId, null, currency);
+          const [refAmount, exchangeRateUsed] = await Promise.all([
+            this.exchangeRateService.convert(amountAbs, currency, user.refCurrency),
+            this.exchangeRateService.getRate(currency, user.refCurrency),
+          ]);
+
+          await this.transactionRepository.create({
+            userId,
+            accountId: account.id,
+            merchant,
+            category,
+            transactionType,
+            amount: signedAmount,
+            currency,
+            refAmount,
+            refCurrency: user.refCurrency,
+            exchangeRateUsed,
+            transactionDate,
+            status: TransactionStatusEnum.VERIFIED,
+            reference,
+            balance,
+          });
+          imported++;
+        } catch (rowError) {
+          skippedInvalid++;
+          errors.push(`Row ${rowNumber}: ${rowError}`);
+        }
+      }
+
+      logger.info(
+        `[Transaction] CSV import for user ${userId}: imported=${imported}, duplicates=${skippedDuplicates}, invalid=${skippedInvalid}`,
+      );
+      return { imported, skippedDuplicates, skippedInvalid, errors: errors.slice(0, 20) };
+    } catch (error) {
+      if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error importing CSV transactions for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to import transactions');
+    }
   }
 
   async markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction> {
