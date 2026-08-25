@@ -222,11 +222,15 @@ class EmailConnectionService implements IEmailConnectionService {
     try {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
-      const affectedAccountIds = await this.ingestionRepository.deleteConnectionData(id);
+      await this.ingestionRepository.deleteConnectionData(id);
+      // Not just accounts this connection's own transactions touched — any of the
+      // user's accounts left with zero transactions afterward is orphaned junk,
+      // regardless of which connection (or manual entry) originally fed it.
+      const accounts = await this.accountService.listAccounts(userId);
       await Promise.all([
         this.budgetRepository.deleteAllForUser(userId),
         this.insightRepository.deleteAllForUser(userId),
-        this.accountService.deactivateOrphaned(userId, affectedAccountIds),
+        this.accountService.deactivateOrphaned(userId, accounts.map((a) => a.id)),
       ]);
       return { success: true, message: 'Connection data deleted', data: null };
     } catch (error) {
