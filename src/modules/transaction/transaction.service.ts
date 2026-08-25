@@ -21,6 +21,7 @@ import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 import AccountService, { IAccountService } from '@/modules/account/account.service';
+import TransferDetectionService, { ITransferDetectionService } from '@/modules/account/transfer-detection.service';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 
 // Extra buffer between a transaction crossing the retention cutoff and it
@@ -50,8 +51,8 @@ export interface ITransactionService {
   bulkCorrectCategory(userId: number, data: BulkCategoryDTO): Promise<{ updated: number }>;
   getUnverified(userId: number): Promise<ITransaction[]>;
   pruneExpiredTransactions(): Promise<void>;
-  markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction>;
-  unmarkTransfer(userId: number, id: number): Promise<ITransaction>;
+  markTransfer(userId: number, id: number, linkedTransactionId?: number, remember?: boolean): Promise<ITransaction>;
+  unmarkTransfer(userId: number, id: number, remember?: boolean): Promise<ITransaction>;
   getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null>;
   getRetentionStatus(userId: number): Promise<{
     retentionMonths: number;
@@ -77,6 +78,7 @@ class TransactionService implements ITransactionService {
     @inject(NotificationService) private notificationService: INotificationService,
     @inject(AccountService) private accountService: IAccountService,
     @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
+    @inject(TransferDetectionService) private transferDetectionService: ITransferDetectionService,
   ) {}
 
   async listTransactions(
@@ -930,7 +932,12 @@ class TransactionService implements ITransactionService {
     }
   }
 
-  async markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction> {
+  async markTransfer(
+    userId: number,
+    id: number,
+    linkedTransactionId?: number,
+    remember?: boolean,
+  ): Promise<ITransaction> {
     try {
       const transaction = await this.transactionRepository.findById(id, userId);
       if (!transaction) throw new ResourceNotFoundException('Transaction not found');
@@ -961,6 +968,15 @@ class TransactionService implements ITransactionService {
           confidence: 'user_created',
         });
         await this.transactionRepository.markExcludedFromTotals([transaction.id, linked.id]);
+
+        if (remember && transaction.accountId != null && linked.accountId != null) {
+          await this.transferDetectionService.rememberDecision(
+            userId,
+            transaction.accountId,
+            linked.accountId,
+            'always_transfer',
+          );
+        }
       } else {
         const isDebit = transaction.transactionType === TransactionTypeEnum.DEBIT;
         await this.transferLinkRepository.create({
@@ -981,10 +997,24 @@ class TransactionService implements ITransactionService {
     }
   }
 
-  async unmarkTransfer(userId: number, id: number): Promise<ITransaction> {
+  async unmarkTransfer(userId: number, id: number, remember?: boolean): Promise<ITransaction> {
     try {
       const transaction = await this.transactionRepository.findById(id, userId);
       if (!transaction) throw new ResourceNotFoundException('Transaction not found');
+
+      if (remember && transaction.accountId != null) {
+        const link = await this.transferLinkRepository.findByTransactionId(id);
+        const linkedId = link ? (link.fromTransactionId === id ? link.toTransactionId : link.fromTransactionId) : null;
+        const linked = linkedId !== null ? await this.transactionRepository.findById(linkedId, userId) : null;
+        if (linked?.accountId != null) {
+          await this.transferDetectionService.rememberDecision(
+            userId,
+            transaction.accountId,
+            linked.accountId,
+            'never_transfer',
+          );
+        }
+      }
 
       await this.clearExistingLink(transaction.id);
 

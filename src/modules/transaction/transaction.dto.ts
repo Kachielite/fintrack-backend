@@ -40,8 +40,14 @@ export type BulkCategoryDTO = z.infer<typeof BulkCategorySchema>;
 
 export const MarkTransferSchema = z.object({
   linked_transaction_id: z.number().int().positive().optional(),
+  remember: z.boolean().optional(),
 });
 export type MarkTransferDTO = z.infer<typeof MarkTransferSchema>;
+
+export const UnmarkTransferSchema = z.object({
+  remember: z.boolean().optional(),
+});
+export type UnmarkTransferDTO = z.infer<typeof UnmarkTransferSchema>;
 
 export const CreateManualTransactionSchema = z.object({
   merchant: z.string().min(1),
