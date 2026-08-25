@@ -17,6 +17,7 @@ export interface ITransactionRepository {
   deleteOlderThan(userId: number, cutoffDate: Date): Promise<void>;
   countOlderThan(userId: number, cutoffDate: Date): Promise<number>;
   countByCategory(userId: number, category: string): Promise<number>;
+  countByAccount(userId: number, accountId: number): Promise<number>;
   findAllForExport(userId: number): Promise<ITransaction[]>;
   findForSummary(userId: number, from: Date, to: Date): Promise<ITransaction[]>;
   existsSimilarTransaction(input: {
@@ -252,6 +253,14 @@ class TransactionRepositoryImpl implements ITransactionRepository {
       .select({ count: count() })
       .from(TransactionSchema)
       .where(and(eq(TransactionSchema.userId, userId), eq(TransactionSchema.category, category)));
+    return Number(row?.count ?? 0);
+  }
+
+  async countByAccount(userId: number, accountId: number): Promise<number> {
+    const [row] = await this.db.client
+      .select({ count: count() })
+      .from(TransactionSchema)
+      .where(and(eq(TransactionSchema.userId, userId), eq(TransactionSchema.accountId, accountId)));
     return Number(row?.count ?? 0);
   }
 

@@ -11,7 +11,8 @@ export interface IIngestionRepository {
   isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean>;
   markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail | null>;
   getConnectionStats(connectionId: number): Promise<IConnectionStats>;
-  deleteConnectionData(connectionId: number): Promise<void>;
+  /** Deletes this connection's transactions and processed-email log, returning the distinct account ids that fed transactions had — the caller uses these to clean up any account this connection alone was feeding. */
+  deleteConnectionData(connectionId: number): Promise<number[]>;
 }
 
 @injectable()
@@ -129,7 +130,12 @@ class IngestionRepositoryImpl implements IIngestionRepository {
     };
   }
 
-  async deleteConnectionData(connectionId: number): Promise<void> {
+  async deleteConnectionData(connectionId: number): Promise<number[]> {
+    const affected = await this.db.client
+      .selectDistinct({ accountId: TransactionSchema.accountId })
+      .from(TransactionSchema)
+      .where(and(eq(TransactionSchema.emailConnectionId, connectionId), isNotNull(TransactionSchema.accountId)));
+
     await this.db.client
       .delete(TransactionSchema)
       .where(eq(TransactionSchema.emailConnectionId, connectionId));
@@ -137,6 +143,8 @@ class IngestionRepositoryImpl implements IIngestionRepository {
     await this.db.client
       .delete(ProcessedEmailSchema)
       .where(eq(ProcessedEmailSchema.emailConnectionId, connectionId));
+
+    return affected.map((row) => row.accountId as number);
   }
 }
 
