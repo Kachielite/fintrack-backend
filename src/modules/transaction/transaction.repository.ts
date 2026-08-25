@@ -15,6 +15,8 @@ export interface ITransactionRepository {
   update(id: number, userId: number, data: Partial<ITransaction>): Promise<ITransaction>;
   delete(id: number, userId: number): Promise<void>;
   deleteOlderThan(userId: number, cutoffDate: Date): Promise<void>;
+  countOlderThan(userId: number, cutoffDate: Date): Promise<number>;
+  findAllForExport(userId: number): Promise<ITransaction[]>;
   findForSummary(userId: number, from: Date, to: Date): Promise<ITransaction[]>;
   existsSimilarTransaction(input: {
     userId: number;
@@ -229,6 +231,29 @@ class TransactionRepositoryImpl implements ITransactionRepository {
           lte(TransactionSchema.transactionDate, cutoffDate),
         ),
       );
+  }
+
+  async countOlderThan(userId: number, cutoffDate: Date): Promise<number> {
+    const [row] = await this.db.client
+      .select({ count: count() })
+      .from(TransactionSchema)
+      .where(
+        and(
+          eq(TransactionSchema.userId, userId),
+          lte(TransactionSchema.transactionDate, cutoffDate),
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
+  // Full history, no excludeFromTotals filter — export is about giving the
+  // user everything they have, not just what counts toward totals.
+  async findAllForExport(userId: number): Promise<ITransaction[]> {
+    return (await this.db.client
+      .select()
+      .from(TransactionSchema)
+      .where(eq(TransactionSchema.userId, userId))
+      .orderBy(TransactionSchema.transactionDate)) as ITransaction[];
   }
 
   async findForSummary(userId: number, from: Date, to: Date): Promise<ITransaction[]> {

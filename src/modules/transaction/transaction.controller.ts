@@ -6,6 +6,7 @@ import {
   Get,
   Patch,
   Post,
+  RawResponse,
 } from '@/common/decorators/controller.decorator';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import TransactionService, { ITransactionService } from './transaction.service';
@@ -171,6 +172,61 @@ class TransactionController extends BaseController {
   async getUnverified(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     return await this.service.getUnverified(userId);
+  }
+
+  /**
+   * @swagger
+   * /transactions/retention-status:
+   *   get:
+   *     tags: [Transactions]
+   *     summary: How much of the user's transaction history is at risk of being pruned
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '200':
+   *         description: Retention window and count of transactions past the cutoff
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/RetentionStatus'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Get('/retention-status')
+  async getRetentionStatus(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.service.getRetentionStatus(userId);
+  }
+
+  /**
+   * @swagger
+   * /transactions/export:
+   *   get:
+   *     tags: [Transactions]
+   *     summary: Download all of the user's transactions as CSV
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '200':
+   *         description: CSV file
+   *         content:
+   *           text/csv:
+   *             schema:
+   *               type: string
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Get('/export')
+  async exportTransactions(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    const csv = await this.service.exportTransactionsCsv(userId);
+    return new RawResponse(csv, 'text/csv', {
+      'Content-Disposition': 'attachment; filename="transactions.csv"',
+    });
   }
 
   @Get('/chart-data', { validate: { query: ChartDataQuerySchema } })

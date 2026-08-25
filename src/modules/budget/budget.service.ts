@@ -23,6 +23,7 @@ function formatCategoryLabel(slug: string): string {
 }
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
+import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 
 const SUGGESTION_CACHE_TTL = 24 * 60 * 60 * 1000;
 const suggestionCache = new Map<number, { data: any[]; cachedAt: number }>();
@@ -258,7 +259,7 @@ class BudgetService implements IBudgetService {
     try {
       logger.info(`[Budget] Auto-generating budgets for user ${userId}`);
       const user = await this.userRepository.findById(userId);
-      const retentionMonths = user?.dataRetentionMonths ?? 3;
+      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
       const currency = user?.refCurrency ?? 'NGN';
 
       const activeBudgets = await this.budgetRepository.findAllActive(userId);
