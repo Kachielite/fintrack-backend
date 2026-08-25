@@ -90,6 +90,19 @@ function buildValidationMiddleware(validate: RouteOptions['validate']) {
   };
 }
 
+/**
+ * Return this from a route handler instead of a plain object to bypass the
+ * default res.json() wrapping — for CSV/file downloads and anything else
+ * that isn't a JSON body. Every other handler is unaffected.
+ */
+export class RawResponse {
+  constructor(
+    public body: string,
+    public contentType: string,
+    public headers: Record<string, string> = {},
+  ) {}
+}
+
 export class BaseController {
   protected router: express.Router;
 
@@ -119,7 +132,15 @@ export class BaseController {
                   query: res.locals.validatedQuery,
                 } as Request);
             const result = await handler(requestForHandler);
-            res.status(statusCode).json(result);
+            if (result instanceof RawResponse) {
+              res.status(statusCode).set('Content-Type', result.contentType);
+              for (const [key, value] of Object.entries(result.headers)) {
+                res.set(key, value);
+              }
+              res.send(result.body);
+            } else {
+              res.status(statusCode).json(result);
+            }
           } catch (err) {
             next(err);
           }

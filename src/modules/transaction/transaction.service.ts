@@ -14,7 +14,14 @@ import { IGeneralResponse, IPagination } from '@/common/types/interface';
 import { BadRequestException, InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { IUserRepository } from '@/modules/user/user.repository';
+import { IUser } from '@/modules/user/user.interface';
+import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
+import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
+
+// Extra buffer between a transaction crossing the retention cutoff and it
+// actually being deleted, so the warning notification always has real lead time.
+const RETENTION_WARNING_GRACE_DAYS = 14;
 
 export interface ITransactionService {
   listTransactions(userId: number, query: TransactionQueryDTO): Promise<IPagination<ITransaction>>;
@@ -42,6 +49,12 @@ export interface ITransactionService {
   markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction>;
   unmarkTransfer(userId: number, id: number): Promise<ITransaction>;
   getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null>;
+  getRetentionStatus(userId: number): Promise<{
+    retentionMonths: number;
+    transactionsAtRisk: number;
+    cutoffDate: string;
+  }>;
+  exportTransactionsCsv(userId: number): Promise<string>;
 }
 
 @injectable()
@@ -52,6 +65,7 @@ class TransactionService implements ITransactionService {
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('ITransferLinkRepository') private transferLinkRepository: ITransferLinkRepository,
     @inject('IExchangeRateService') private exchangeRateService: IExchangeRateService,
+    @inject(NotificationService) private notificationService: INotificationService,
   ) {}
 
   async listTransactions(
@@ -191,7 +205,14 @@ class TransactionService implements ITransactionService {
       const from = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
       const to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-      const trendFrom = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+      // Trend window can't outrun what the user's plan actually retains —
+      // a free-tier user with a 2-month window would otherwise see 4 blank
+      // months on a chart that implies 6 months of history.
+      const user = await this.userRepository.findById(userId);
+      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
+      const trendMonths = Math.min(6, retentionMonths);
+
+      const trendFrom = new Date(now.getFullYear(), now.getMonth() - (trendMonths - 1), 1);
       const trendTo = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
       const [transactions, trendTransactions] = await Promise.all([
@@ -229,10 +250,10 @@ class TransactionService implements ITransactionService {
         else weekdaySpend += Math.abs(t.refAmount);
       }
 
-      // Monthly trend (always last 6 months)
+      // Monthly trend — capped to the user's retention window (see trendMonths above)
       const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const trendMap = new Map<string, { spend: number; income: number }>();
-      for (let i = 5; i >= 0; i--) {
+      for (let i = trendMonths - 1; i >= 0; i--) {
         const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
         trendMap.set(`${MONTHS[d.getMonth()]} ${d.getFullYear()}`, { spend: 0, income: 0 });
       }
@@ -500,14 +521,120 @@ class TransactionService implements ITransactionService {
       logger.info('Starting transaction pruning job');
       const allUsers = await this.userRepository.findAll?.() || [];
       for (const user of allUsers) {
+        const retentionMonths = getRetentionMonthsForPlan(user.planTier);
         const cutoff = new Date();
-        cutoff.setMonth(cutoff.getMonth() - user.dataRetentionMonths);
-        await this.transactionRepository.deleteOlderThan(user.id, cutoff);
+        cutoff.setMonth(cutoff.getMonth() - retentionMonths);
+
+        // Data only becomes eligible for deletion once it's past the cutoff
+        // AND past this extra grace window — guaranteeing real lead time
+        // between a user seeing the "data at risk" warning and it being gone,
+        // rather than pruning silently the moment the cutoff is crossed.
+        const graceCutoff = new Date(cutoff);
+        graceCutoff.setDate(graceCutoff.getDate() - RETENTION_WARNING_GRACE_DAYS);
+
+        await this.warnIfApproachingRetentionCutoff(user, cutoff);
+        await this.transactionRepository.deleteOlderThan(user.id, graceCutoff);
       }
       logger.info('Transaction pruning completed');
     } catch (error) {
       logger.error(`Error pruning transactions - ${error}`);
     }
+  }
+
+  private async warnIfApproachingRetentionCutoff(user: IUser, cutoff: Date): Promise<void> {
+    try {
+      const atRisk = await this.transactionRepository.countOlderThan(user.id, cutoff);
+      if (atRisk === 0) return;
+
+      // Dedupe: don't re-warn if we already sent one within the grace window.
+      const recentNotifications = await this.notificationService.list(user.id);
+      const warnedRecently = recentNotifications.some((n) => {
+        if (n.type !== 'retention_warning') return false;
+        const ageMs = Date.now() - new Date(n.createdAt).getTime();
+        return ageMs < RETENTION_WARNING_GRACE_DAYS * 24 * 60 * 60 * 1000;
+      });
+      if (warnedRecently) return;
+
+      const retentionMonths = getRetentionMonthsForPlan(user.planTier);
+      await this.notificationService.create({
+        userId: user.id,
+        type: 'retention_warning',
+        title: 'Older transactions will be removed soon',
+        body: `You have ${atRisk} transaction${atRisk === 1 ? '' : 's'} older than your ${retentionMonths}-month retention window. Export your data if you want to keep it — they'll be deleted in about ${RETENTION_WARNING_GRACE_DAYS} days.`,
+        data: { transactionsAtRisk: atRisk, retentionMonths, cutoffDate: cutoff.toISOString() },
+      });
+    } catch (error) {
+      logger.warn(`[Transaction] Retention warning check failed for user ${user.id}: ${error}`);
+    }
+  }
+
+  async getRetentionStatus(userId: number): Promise<{
+    retentionMonths: number;
+    transactionsAtRisk: number;
+    cutoffDate: string;
+  }> {
+    try {
+      const user = await this.userRepository.findById(userId);
+      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - retentionMonths);
+      const transactionsAtRisk = await this.transactionRepository.countOlderThan(userId, cutoff);
+      return { retentionMonths, transactionsAtRisk, cutoffDate: cutoff.toISOString() };
+    } catch (error) {
+      logger.error(`Error getting retention status for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to get retention status');
+    }
+  }
+
+  async exportTransactionsCsv(userId: number): Promise<string> {
+    try {
+      logger.info(`[Transaction] Exporting transactions to CSV for user ${userId}`);
+      const transactions = await this.transactionRepository.findAllForExport(userId);
+      const columns = [
+        'date',
+        'merchant',
+        'category',
+        'type',
+        'amount',
+        'currency',
+        'ref_amount',
+        'ref_currency',
+        'status',
+        'reference',
+        'balance',
+        'excluded_from_totals',
+      ];
+      const rows = transactions.map((t) => [
+        t.transactionDate.toISOString(),
+        t.merchant,
+        t.category,
+        t.transactionType,
+        t.amount,
+        t.currency,
+        t.refAmount,
+        t.refCurrency,
+        t.status,
+        t.reference ?? '',
+        t.balance ?? '',
+        t.excludeFromTotals,
+      ]);
+      return this.toCsv(columns, rows);
+    } catch (error) {
+      logger.error(`Error exporting transactions for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to export transactions');
+    }
+  }
+
+  private toCsv(columns: string[], rows: (string | number | boolean)[][]): string {
+    const escape = (value: string | number | boolean): string => {
+      const str = String(value);
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    const lines = [columns.map(escape).join(',')];
+    for (const row of rows) {
+      lines.push(row.map(escape).join(','));
+    }
+    return lines.join('\n');
   }
 
   async markTransfer(userId: number, id: number, linkedTransactionId?: number): Promise<ITransaction> {

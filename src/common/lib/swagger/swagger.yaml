@@ -468,6 +468,21 @@ components:
           items:
             $ref: '#/components/schemas/DailySpendPoint'
 
+    RetentionStatus:
+      type: object
+      properties:
+        retentionMonths:
+          type: number
+          description: How many months of history this user's plan retains
+          example: 2
+        transactionsAtRisk:
+          type: number
+          description: Count of transactions already past the retention cutoff
+          example: 12
+        cutoffDate:
+          type: string
+          format: date-time
+
     CategorySpend:
       type: object
       properties:

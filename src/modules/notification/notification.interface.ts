@@ -5,7 +5,8 @@ export type NotificationType =
   | 'insight_generated'
   | 'budget_warning'
   | 'budget_exceeded'
-  | 'iris_ready';
+  | 'iris_ready'
+  | 'retention_warning';
 
 export interface INotification {
   id: number;
