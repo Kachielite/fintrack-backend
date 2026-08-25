@@ -15,6 +15,7 @@ const authPrefixes = [
   '/api/email-connections',
   '/api/banks',
   '/api/transactions',
+  '/api/accounts',
   '/api/exchange-rates',
   '/api/budgets',
   '/api/goals',

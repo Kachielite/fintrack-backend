@@ -18,12 +18,14 @@ import { TransactionSchema } from '../src/modules/transaction/transaction.schema
 import BankRepositoryImpl from '../src/modules/bank/bank.repository';
 import AccountRepositoryImpl from '../src/modules/account/account.repository';
 import AccountService from '../src/modules/account/account.service';
+import TransactionRepositoryImpl from '../src/modules/transaction/transaction.repository';
 
 async function backfill() {
   const db = new Database();
   const bankRepository = new BankRepositoryImpl(db);
   const accountRepository = new AccountRepositoryImpl(db);
-  const accountService = new AccountService(accountRepository, bankRepository);
+  const transactionRepository = new TransactionRepositoryImpl(db);
+  const accountService = new AccountService(accountRepository, bankRepository, transactionRepository);
 
   const groups = await db.client
     .selectDistinct({
