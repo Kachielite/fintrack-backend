@@ -12,6 +12,7 @@ import { IIngestionRepository } from '@/modules/ingestion/ingestion.repository';
 import { IConnectionStats } from '@/modules/ingestion/ingestion.interface';
 import { IBudgetRepository } from '@/modules/budget/budget.repository';
 import { IInsightRepository } from '@/modules/insight/insight.repository';
+import AccountService, { IAccountService } from '@/modules/account/account.service';
 import {
   GmailCallbackDTO,
   EmailConnectionResponseDTO,
@@ -67,6 +68,8 @@ class EmailConnectionService implements IEmailConnectionService {
     private budgetRepository: IBudgetRepository,
     @inject('IInsightRepository')
     private insightRepository: IInsightRepository,
+    @inject(AccountService)
+    private accountService: IAccountService,
   ) {}
 
   getAuthUrl(userId: number): string {
@@ -219,10 +222,11 @@ class EmailConnectionService implements IEmailConnectionService {
     try {
       const connection = await this.connectionRepository.findById(id, userId);
       if (!connection) throw new ResourceNotFoundException('Email connection not found');
-      await this.ingestionRepository.deleteConnectionData(id);
+      const affectedAccountIds = await this.ingestionRepository.deleteConnectionData(id);
       await Promise.all([
         this.budgetRepository.deleteAllForUser(userId),
         this.insightRepository.deleteAllForUser(userId),
+        this.accountService.deactivateOrphaned(userId, affectedAccountIds),
       ]);
       return { success: true, message: 'Connection data deleted', data: null };
     } catch (error) {

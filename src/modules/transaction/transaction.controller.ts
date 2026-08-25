@@ -22,6 +22,8 @@ import {
   BulkCategoryDTO,
   MarkTransferSchema,
   MarkTransferDTO,
+  UnmarkTransferSchema,
+  UnmarkTransferDTO,
   CreateManualTransactionSchema,
   CreateManualTransactionDTO,
   ImportTransactionsCsvSchema,
@@ -483,6 +485,10 @@ class TransactionController extends BaseController {
    *               linked_transaction_id:
    *                 type: integer
    *                 example: 43
+   *               remember:
+   *                 type: boolean
+   *                 description: If true, remember this decision for future transactions between the same two accounts.
+   *                 example: true
    *     responses:
    *       '200':
    *         description: Updated transaction
@@ -503,8 +509,8 @@ class TransactionController extends BaseController {
   async markTransfer(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
-    const { linked_transaction_id } = req.body as MarkTransferDTO;
-    return await this.service.markTransfer(userId, id, linked_transaction_id);
+    const { linked_transaction_id, remember } = req.body as MarkTransferDTO;
+    return await this.service.markTransfer(userId, id, linked_transaction_id, remember);
   }
 
   /**
@@ -522,6 +528,16 @@ class TransactionController extends BaseController {
    *         schema:
    *           type: integer
    *           example: 42
+   *     requestBody:
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               remember:
+   *                 type: boolean
+   *                 description: If true, remember this decision for future transactions between the same two accounts.
+   *                 example: true
    *     responses:
    *       '200':
    *         description: Updated transaction
@@ -536,11 +552,12 @@ class TransactionController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
-  @Post('/:id/unmark-transfer')
+  @Post('/:id/unmark-transfer', { validate: UnmarkTransferSchema })
   async unmarkTransfer(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const id = parseInt(req.params.id as string, 10);
-    return await this.service.unmarkTransfer(userId, id);
+    const { remember } = req.body as UnmarkTransferDTO;
+    return await this.service.unmarkTransfer(userId, id, remember);
   }
 
   /**

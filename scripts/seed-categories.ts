@@ -147,6 +147,20 @@ const CATEGORIES = [
     regex: '\\b(fcy\\s*conversion|currency\\s*conv|fx\\s*conversion|forex|exchange)\\b',
   },
 
+  // ── Self-Transfer ────────────────────────────────────────────────────────────
+  // Applied by transfer-detection when a same-currency transaction is matched (or
+  // confirmed) as money moving between the user's own accounts — not spend or
+  // income. The regex only catches explicit narrations; most self-transfers are
+  // tagged after the fact by TransferDetectionService, not by this pattern.
+  {
+    slug: 'self_transfer',
+    name: 'Self-Transfer',
+    icon: '🔁',
+    type: 'expense',
+    description: 'Money moved between your own accounts — not counted as spend or income.',
+    regex: '\\b(own\\s*account|self\\s*transfer|to\\s*self)\\b',
+  },
+
   // ── Cash Withdrawal ───────────────────────────────────────────────────────────
   {
     slug: 'cash_withdrawal',

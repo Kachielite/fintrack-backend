@@ -32,6 +32,7 @@ const DEFAULT_CATEGORIES = [
   { slug: 'travel', name: 'Travel', regex: null },
   { slug: 'bank_charges', name: 'Bank Charges', regex: null },
   { slug: 'currency_conversion', name: 'Currency Conversion', regex: null },
+  { slug: 'self_transfer', name: 'Self-Transfer', regex: null },
   { slug: 'salary_wages', name: 'Salary & Wages', regex: null },
   { slug: 'refunds_reimbursements', name: 'Refunds & Reimbursements', regex: null },
   { slug: 'healthcare', name: 'Healthcare', regex: null },

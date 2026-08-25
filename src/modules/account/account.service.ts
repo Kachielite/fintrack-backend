@@ -18,6 +18,12 @@ export interface IAccountService {
   updateAccount(userId: number, id: number, data: PatchAccountDTO): Promise<AccountResponseDTO>;
   /** Raw account lookup scoped to the owning user — null if it doesn't exist or belongs to someone else. */
   findOwnedAccount(userId: number, accountId: number): Promise<IAccount | null>;
+  /**
+   * Deactivates any of the given accounts that now have zero transactions left.
+   * Used after an email connection's data is wiped, so an account it alone fed
+   * doesn't linger on the accounts page as an empty, orphaned entry.
+   */
+  deactivateOrphaned(userId: number, candidateAccountIds: number[]): Promise<number>;
 }
 
 @injectable()
@@ -96,6 +102,24 @@ class AccountService implements IAccountService {
       if (error instanceof ResourceNotFoundException || error instanceof BadRequestException) throw error;
       logger.error(`[Account] updateAccount error for account ${id} - ${error}`);
       throw new InternalServerException('Failed to update account');
+    }
+  }
+
+  async deactivateOrphaned(userId: number, candidateAccountIds: number[]): Promise<number> {
+    try {
+      if (candidateAccountIds.length === 0) return 0;
+      let deactivated = 0;
+      for (const accountId of candidateAccountIds) {
+        const remaining = await this.transactionRepository.countByAccount(userId, accountId);
+        if (remaining > 0) continue;
+        await this.accountRepository.update(accountId, userId, { isActive: false });
+        deactivated++;
+      }
+      logger.info(`[Account] Deactivated ${deactivated} orphaned account(s) for user ${userId}`);
+      return deactivated;
+    } catch (error) {
+      logger.error(`[Account] deactivateOrphaned error for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to clean up orphaned accounts');
     }
   }
 

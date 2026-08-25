@@ -8,6 +8,8 @@ import { TransactionTypeEnum, TransactionStatusEnum, CategoryEnum } from '../src
 import { ITransferLinkRepository } from '../src/modules/account/transfer-link.repository';
 import { ITransferLink } from '../src/modules/account/transfer-link.interface';
 import { IExchangeRateService } from '../src/modules/exchange-rate/exchange-rate.service';
+import { IAccountTransferRuleRepository } from '../src/modules/account/account-transfer-rule.repository';
+import { IAccountTransferRule, TransferRuleDecision } from '../src/modules/account/account-transfer-rule.interface';
 
 let nextTxnId = 1;
 
@@ -40,11 +42,16 @@ function makeTransaction(overrides: Partial<ITransaction> & { userId: number; ac
 }
 
 class FakeTransactionRepository
-  implements Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals' | 'findUnexcludedForUser'>
+  implements
+    Pick<ITransactionRepository, 'findTransferCandidates' | 'markExcludedFromTotals' | 'findUnexcludedForUser' | 'update'>
 {
   // Used directly by the detectForTransaction tests below.
   candidates: ITransaction[] = [];
   excludedIds: number[] = [];
+  // Records every update() call — the transaction passed into detectForTransaction
+  // is a bare object, not something registered in `store`/`candidates`, so this is
+  // the only way tests can assert what category a leg was relabeled to.
+  updates: { id: number; data: Partial<ITransaction> }[] = [];
   // Used by the rescanForUser tests: a shared pool that findTransferCandidates and
   // findUnexcludedForUser both search live against, mirroring the real DB filter.
   store: ITransaction[] = [];
@@ -71,6 +78,16 @@ class FakeTransactionRepository
 
   async findUnexcludedForUser(): Promise<ITransaction[]> {
     return this.store.filter((t) => !t.excludeFromTotals);
+  }
+
+  async update(id: number, userId: number, data: Partial<ITransaction>): Promise<ITransaction> {
+    this.updates.push({ id, data });
+    const applyTo = (t: ITransaction) => Object.assign(t, data);
+    const target =
+      this.store.find((t) => t.id === id && t.userId === userId) ??
+      this.candidates.find((t) => t.id === id && t.userId === userId);
+    if (target) applyTo(target);
+    return (target ?? ({ id, userId, ...data } as ITransaction)) as ITransaction;
   }
 }
 
@@ -108,16 +125,56 @@ class FakeExchangeRateService implements Pick<IExchangeRateService, 'getRate'> {
   }
 }
 
+class FakeAccountTransferRuleRepository implements IAccountTransferRuleRepository {
+  rules: IAccountTransferRule[] = [];
+  private nextId = 1;
+
+  async findForPair(userId: number, accountAId: number, accountBId: number): Promise<IAccountTransferRule | null> {
+    const [lo, hi] = accountAId < accountBId ? [accountAId, accountBId] : [accountBId, accountAId];
+    return (
+      this.rules.find((r) => r.userId === userId && r.accountAId === lo && r.accountBId === hi) ?? null
+    );
+  }
+
+  async upsert(
+    userId: number,
+    accountAId: number,
+    accountBId: number,
+    decision: TransferRuleDecision,
+  ): Promise<IAccountTransferRule> {
+    const [lo, hi] = accountAId < accountBId ? [accountAId, accountBId] : [accountBId, accountAId];
+    const existing = await this.findForPair(userId, lo, hi);
+    if (existing) {
+      existing.decision = decision;
+      existing.updatedAt = new Date();
+      return existing;
+    }
+    const rule: IAccountTransferRule = {
+      id: this.nextId++,
+      userId,
+      accountAId: lo,
+      accountBId: hi,
+      decision,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.rules.push(rule);
+    return rule;
+  }
+}
+
 function setup(marketRate = 1) {
   const transactionRepository = new FakeTransactionRepository();
   const transferLinkRepository = new FakeTransferLinkRepository();
   const exchangeRateService = new FakeExchangeRateService(marketRate) as unknown as IExchangeRateService;
+  const ruleRepository = new FakeAccountTransferRuleRepository();
   const service = new TransferDetectionService(
     transactionRepository as unknown as ITransactionRepository,
     transferLinkRepository,
     exchangeRateService,
+    ruleRepository,
   );
-  return { transactionRepository, transferLinkRepository, service };
+  return { transactionRepository, transferLinkRepository, ruleRepository, service };
 }
 
 describe('TransferDetectionService.detectForTransaction', () => {
@@ -136,15 +193,20 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].linkType, 'internal_transfer');
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_high');
     assert.deepEqual(transactionRepository.excludedIds.sort(), [debit.id, credit.id].sort());
+    assert.deepEqual(
+      transactionRepository.updates.map((u) => u.data.category).sort(),
+      [CategoryEnum.SELF_TRANSFER, CategoryEnum.SELF_TRANSFER],
+    );
   });
 
-  test('links a cross-currency match within FX tolerance as currency_conversion/auto_low', async () => {
+  test('links a cross-currency match within FX tolerance as currency_conversion/auto_low when narrations share no name', async () => {
     const { transactionRepository, transferLinkRepository, service } = setup(1600);
     const debit = makeTransaction({
       userId: 1,
       accountId: 1,
       currency: 'USD',
       amount: -100,
+      merchant: 'FX Conversion',
       transactionType: TransactionTypeEnum.DEBIT,
     });
     const credit = makeTransaction({
@@ -152,6 +214,7 @@ describe('TransferDetectionService.detectForTransaction', () => {
       accountId: 2,
       currency: 'NGN',
       amount: 159000, // implied rate 1590, within 3% of 1600
+      merchant: 'Wallet Funding',
       transactionType: TransactionTypeEnum.CREDIT,
     });
     transactionRepository.candidates = [credit];
@@ -163,6 +226,92 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
     assert.equal(transferLinkRepository.links[0].fromTransactionId, debit.id);
     assert.equal(transferLinkRepository.links[0].toTransactionId, credit.id);
+    // Category is always self_transfer once matched, regardless of currency —
+    // linkType (currency_conversion, asserted above) stays the technical record
+    // of what actually happened, but the user-facing category is unified.
+    assert.deepEqual(
+      transactionRepository.updates.map((u) => u.data.category).sort(),
+      [CategoryEnum.SELF_TRANSFER, CategoryEnum.SELF_TRANSFER],
+    );
+  });
+
+  test('upgrades a cross-currency FX-tolerance match to auto_high when both narrations name the same counterparty', async () => {
+    const { transactionRepository, transferLinkRepository, service } = setup(1600);
+    const debit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      currency: 'USD',
+      amount: -100,
+      merchant: 'TRF TO JANE DOE',
+      transactionType: TransactionTypeEnum.DEBIT,
+    });
+    const credit = makeTransaction({
+      userId: 1,
+      accountId: 2,
+      currency: 'NGN',
+      amount: 159000,
+      merchant: 'TRF FROM JANE DOE',
+      transactionType: TransactionTypeEnum.CREDIT,
+    });
+    transactionRepository.candidates = [credit];
+
+    await service.detectForTransaction(debit);
+
+    assert.equal(transferLinkRepository.links.length, 1);
+    assert.equal(transferLinkRepository.links[0].confidence, 'auto_high');
+  });
+
+  test('never_transfer rule blocks a match even when amount/FX would otherwise qualify', async () => {
+    const { transactionRepository, transferLinkRepository, ruleRepository, service } = setup();
+    ruleRepository.rules.push({
+      id: 1,
+      userId: 1,
+      accountAId: 1,
+      accountBId: 2,
+      decision: 'never_transfer',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const debit = makeTransaction({ userId: 1, accountId: 1, amount: -1000, transactionType: TransactionTypeEnum.DEBIT });
+    const credit = makeTransaction({ userId: 1, accountId: 2, amount: 1000, transactionType: TransactionTypeEnum.CREDIT });
+    transactionRepository.candidates = [credit];
+
+    await service.detectForTransaction(debit);
+
+    assert.equal(transferLinkRepository.links.length, 0);
+  });
+
+  test('always_transfer rule links at rule_based confidence even outside normal FX tolerance', async () => {
+    const { transactionRepository, transferLinkRepository, ruleRepository, service } = setup(1600);
+    ruleRepository.rules.push({
+      id: 1,
+      userId: 1,
+      accountAId: 1,
+      accountBId: 2,
+      decision: 'always_transfer',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const debit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      currency: 'USD',
+      amount: -100,
+      transactionType: TransactionTypeEnum.DEBIT,
+    });
+    const credit = makeTransaction({
+      userId: 1,
+      accountId: 2,
+      currency: 'NGN',
+      amount: 149000, // implied rate 1490, ~6.9% off 1600 — outside normal 3% but inside the 8% rule-trusted tolerance
+      transactionType: TransactionTypeEnum.CREDIT,
+    });
+    transactionRepository.candidates = [credit];
+
+    await service.detectForTransaction(debit);
+
+    assert.equal(transferLinkRepository.links.length, 1);
+    assert.equal(transferLinkRepository.links[0].confidence, 'rule_based');
   });
 
   test('does not match a cross-currency candidate outside FX tolerance', async () => {
@@ -201,6 +350,23 @@ describe('TransferDetectionService.detectForTransaction', () => {
     assert.equal(transferLinkRepository.links[0].toTransactionId, null);
     assert.equal(transferLinkRepository.links[0].linkType, 'currency_conversion');
     assert.equal(transferLinkRepository.links[0].confidence, 'auto_low');
+    assert.deepEqual(transactionRepository.excludedIds, [debit.id]);
+  });
+
+  test('excludes an unmatched self_transfer leg alone, even with no counterpart ever ingested', async () => {
+    const { transactionRepository, transferLinkRepository, service } = setup();
+    const debit = makeTransaction({
+      userId: 1,
+      accountId: 1,
+      category: CategoryEnum.SELF_TRANSFER,
+      transactionType: TransactionTypeEnum.DEBIT,
+    });
+    transactionRepository.candidates = [];
+
+    await service.detectForTransaction(debit);
+
+    assert.equal(transferLinkRepository.links.length, 1);
+    assert.equal(transferLinkRepository.links[0].linkType, 'internal_transfer');
     assert.deepEqual(transactionRepository.excludedIds, [debit.id]);
   });
 

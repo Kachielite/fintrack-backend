@@ -92,9 +92,12 @@ class FakeBankRepository implements Pick<IBankRepository, 'findById'> {
   }
 }
 
-class FakeTransactionRepository implements Pick<ITransactionRepository, 'findLatestBalance' | 'reassignAccount'> {
+class FakeTransactionRepository
+  implements Pick<ITransactionRepository, 'findLatestBalance' | 'reassignAccount' | 'countByAccount'>
+{
   balances = new Map<number, { balance: number; transactionDate: Date }>();
   reassignments: Array<{ userId: number; from: number; to: number }> = [];
+  accountCounts = new Map<number, number>();
 
   async findLatestBalance(accountId: number): Promise<{ balance: number; transactionDate: Date } | null> {
     return this.balances.get(accountId) ?? null;
@@ -103,6 +106,10 @@ class FakeTransactionRepository implements Pick<ITransactionRepository, 'findLat
   async reassignAccount(userId: number, fromAccountId: number, toAccountId: number): Promise<number> {
     this.reassignments.push({ userId, from: fromAccountId, to: toAccountId });
     return 3;
+  }
+
+  async countByAccount(userId: number, accountId: number): Promise<number> {
+    return this.accountCounts.get(accountId) ?? 0;
   }
 }
 
@@ -238,5 +245,37 @@ describe('AccountService.updateAccount', () => {
   test('rejects updating a nonexistent or foreign account', async () => {
     const { service } = setup();
     await assert.rejects(() => service.updateAccount(1, 9999, { label: 'Nope' }));
+  });
+});
+
+describe('AccountService.deactivateOrphaned', () => {
+  test('deactivates a candidate account left with zero transactions', async () => {
+    const { service, transactionRepository } = setup();
+    const account = await service.resolveOrCreate(1, ZENITH.id, 'NGN');
+    (transactionRepository as any).accountCounts.set(account.id, 0);
+
+    const deactivated = await service.deactivateOrphaned(1, [account.id]);
+
+    assert.equal(deactivated, 1);
+    const found = await service.findOwnedAccount(1, account.id);
+    assert.equal(found?.isActive, false);
+  });
+
+  test('leaves an account alone if it still has transactions from another source', async () => {
+    const { service, transactionRepository } = setup();
+    const account = await service.resolveOrCreate(1, ZENITH.id, 'NGN');
+    (transactionRepository as any).accountCounts.set(account.id, 2);
+
+    const deactivated = await service.deactivateOrphaned(1, [account.id]);
+
+    assert.equal(deactivated, 0);
+    const found = await service.findOwnedAccount(1, account.id);
+    assert.equal(found?.isActive, true);
+  });
+
+  test('is a no-op for an empty candidate list', async () => {
+    const { service } = setup();
+    const deactivated = await service.deactivateOrphaned(1, []);
+    assert.equal(deactivated, 0);
   });
 });
