@@ -65,3 +65,9 @@ export interface ITransactionFilter {
   dateTo?: Date;
   search?: string;
 }
+
+export interface IDailySpendPoint {
+  date: string;
+  spend: number;
+  income: number;
+}

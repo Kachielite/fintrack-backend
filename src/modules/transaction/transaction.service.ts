@@ -1,6 +1,6 @@
 import { inject, injectable } from 'tsyringe';
 import { ITransactionRepository } from './transaction.repository';
-import { ITransaction } from './transaction.interface';
+import { ITransaction, IDailySpendPoint } from './transaction.interface';
 import {
   CorrectTransactionDTO,
   TransactionQueryDTO,
@@ -23,6 +23,7 @@ export interface ITransactionService {
     month?: number,
   ): Promise<Record<string, unknown>>;
   getChartData(userId: number, period: string): Promise<Record<string, unknown>>;
+  getDailySpend(userId: number, year?: number, month?: number): Promise<IDailySpendPoint[]>;
   getTransaction(id: number, userId: number): Promise<ITransaction>;
   correctTransaction(
     id: number,
@@ -195,17 +196,7 @@ class TransactionService implements ITransactionService {
       const refCurrency = transactions.find((t) => t.refCurrency)?.refCurrency || 'NGN';
 
       // Daily spend
-      const dailyMap = new Map<string, { spend: number; income: number }>();
-      for (const t of transactions) {
-        const key = new Date(t.transactionDate).toISOString().split('T')[0];
-        const e = dailyMap.get(key) || { spend: 0, income: 0 };
-        if (t.amount < 0) e.spend += Math.abs(t.refAmount);
-        else e.income += t.refAmount;
-        dailyMap.set(key, e);
-      }
-      const dailySpend = Array.from(dailyMap.entries())
-        .map(([date, d]) => ({ date, spend: Math.round(d.spend), income: Math.round(d.income) }))
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const dailySpend = this.computeDailySpend(transactions);
 
       // By category
       const totalSpend = transactions.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.refAmount), 0);
@@ -303,6 +294,43 @@ class TransactionService implements ITransactionService {
       logger.error(`Error getting chart data for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to get chart data');
     }
+  }
+
+  /**
+   * Daily spend/income for one explicit month — unlike getChartData's period
+   * (1m/3m/6m, always relative to today), this takes a target year/month so a
+   * calendar view can page to any month, not just the current one.
+   */
+  async getDailySpend(userId: number, year?: number, month?: number): Promise<IDailySpendPoint[]> {
+    try {
+      const now = new Date();
+      const y = year || now.getFullYear();
+      const m = month !== undefined ? month : now.getMonth() + 1;
+
+      const from = new Date(y, m - 1, 1);
+      const to = new Date(y, m, 0, 23, 59, 59);
+
+      logger.info(`[Transaction] Getting daily spend for user ${userId} (year=${y}, month=${m})`);
+      const transactions = await this.transactionRepository.findForSummary(userId, from, to);
+      return this.computeDailySpend(transactions);
+    } catch (error) {
+      logger.error(`Error getting daily spend for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to get daily spend');
+    }
+  }
+
+  private computeDailySpend(transactions: ITransaction[]): IDailySpendPoint[] {
+    const dailyMap = new Map<string, { spend: number; income: number }>();
+    for (const t of transactions) {
+      const key = new Date(t.transactionDate).toISOString().split('T')[0];
+      const e = dailyMap.get(key) || { spend: 0, income: 0 };
+      if (t.amount < 0) e.spend += Math.abs(t.refAmount);
+      else e.income += t.refAmount;
+      dailyMap.set(key, e);
+    }
+    return Array.from(dailyMap.entries())
+      .map(([date, d]) => ({ date, spend: Math.round(d.spend), income: Math.round(d.income) }))
+      .sort((a, b) => a.date.localeCompare(b.date));
   }
 
   async getTransaction(id: number, userId: number): Promise<ITransaction> {

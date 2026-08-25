@@ -427,6 +427,20 @@ components:
           items:
             $ref: '#/components/schemas/Transaction'
 
+    DailySpendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          example: '2026-05-14'
+        spend:
+          type: number
+          example: 12500
+        income:
+          type: number
+          example: 0
+
     CategorySpend:
       type: object
       properties:
