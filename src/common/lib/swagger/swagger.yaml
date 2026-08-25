@@ -190,6 +190,65 @@ components:
           type: boolean
           example: true
 
+    # ── Account ──────────────────────────────────────────────────────────────
+    Account:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        bank_id:
+          type: integer
+          nullable: true
+          example: 2
+        bank_name:
+          type: string
+          nullable: true
+          example: Access Bank
+        bank_logo_url:
+          type: string
+          nullable: true
+          example: 'https://cdn.example.com/access.png'
+        currency:
+          type: string
+          example: NGN
+        label:
+          type: string
+          example: Access Bank (NGN)
+        account_number_mask:
+          type: string
+          nullable: true
+          example: '4821'
+        is_active:
+          type: boolean
+          example: true
+        balance:
+          type: number
+          nullable: true
+          description: Sourced from this account's most recent transaction that captured a balance; null if none has.
+          example: 158420.5
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-05-12T07:23:39.621Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-01-20T08:00:00.000Z'
+
+    RescanTransfersResult:
+      type: object
+      properties:
+        scanned:
+          type: integer
+          description: Transactions actually run through detection this pass (a transaction claimed by an earlier match in the same pass is skipped, not counted).
+          example: 42
+        linked:
+          type: integer
+          description: Transactions newly excluded from totals — as a matched pair or a single unlinked currency_conversion leg.
+          example: 3
+
     # ── Email Connection ──────────────────────────────────────────────────────
     EmailConnection:
       type: object
@@ -339,6 +398,14 @@ components:
           type: integer
           nullable: true
           example: 1
+        accountId:
+          type: integer
+          nullable: true
+          example: 3
+        excludeFromTotals:
+          type: boolean
+          description: True when this transaction is a matched or independently-flagged transfer/conversion leg, so it's excluded from spend/income totals.
+          example: false
 
     PaginatedTransactions:
       type: object

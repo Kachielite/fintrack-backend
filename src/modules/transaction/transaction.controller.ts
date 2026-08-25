@@ -311,6 +311,10 @@ class TransactionController extends BaseController {
    *     responses:
    *       '200':
    *         description: Updated transaction
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Transaction'
    *       '400':
    *         $ref: '#/components/responses/BadRequest'
    *       '404':
@@ -346,6 +350,10 @@ class TransactionController extends BaseController {
    *     responses:
    *       '200':
    *         description: Updated transaction
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Transaction'
    *       '404':
    *         $ref: '#/components/responses/NotFound'
    *       '401':
@@ -378,6 +386,12 @@ class TransactionController extends BaseController {
    *     responses:
    *       '200':
    *         description: The linked transaction, or null if this transaction isn't paired
+   *         content:
+   *           application/json:
+   *             schema:
+   *               nullable: true
+   *               allOf:
+   *                 - $ref: '#/components/schemas/Transaction'
    *       '404':
    *         $ref: '#/components/responses/NotFound'
    *       '401':
