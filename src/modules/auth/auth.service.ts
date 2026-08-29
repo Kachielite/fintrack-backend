@@ -1,19 +1,21 @@
 import { inject, injectable } from 'tsyringe';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import jwksClient from 'jwks-rsa';
 import { CONSTANTS } from '@/common/configuration/constants';
 import {
   BadRequestException,
+  ConflictException,
   InternalServerException,
   UnAuthorizedException,
 } from '@/common/exception';
 import logger from '@/common/lib/logger';
+import { hashPassword, comparePassword } from '@/common/utils/password-encoder';
 import { IAuthRepository } from './auth.repository';
 import { IUserRepository } from '@/modules/user/user.repository';
-import { AuthResponseDTO, GoogleAuthDTO, AppleAuthDTO, RefreshTokenDTO, DemoAuthDTO } from './auth.dto';
+import { IUser } from '@/modules/user/user.interface';
+import { AuthResponseDTO, GoogleAuthDTO, AppleAuthDTO, RefreshTokenDTO, LoginDTO, RegisterDTO } from './auth.dto';
 import { AuthProviderEnum } from './auth.enum';
 
 const appleJwksClient = jwksClient({
@@ -23,7 +25,8 @@ const appleJwksClient = jwksClient({
 export interface IAuthService {
   googleAuth(data: GoogleAuthDTO): Promise<AuthResponseDTO>;
   appleAuth(data: AppleAuthDTO): Promise<AuthResponseDTO>;
-  demoAuth(data: DemoAuthDTO): Promise<AuthResponseDTO>;
+  login(data: LoginDTO): Promise<AuthResponseDTO>;
+  register(data: RegisterDTO): Promise<AuthResponseDTO>;
   refreshToken(data: RefreshTokenDTO): Promise<Pick<AuthResponseDTO, 'access_token'>>;
   logout(userId: number): Promise<void>;
 }
@@ -84,38 +87,54 @@ class AuthService implements IAuthService {
     }
   }
 
-  async demoAuth(data: DemoAuthDTO): Promise<AuthResponseDTO> {
+  async login(data: LoginDTO): Promise<AuthResponseDTO> {
     try {
-      logger.info('[Auth] Demo auth attempt');
+      logger.info('[Auth] Login attempt');
       const user = await this.userRepository.findByEmail(data.email);
-      if (!user || !user.demoPasswordHash) {
-        throw new UnAuthorizedException('Invalid demo credentials');
+      if (!user || !user.passwordHash) {
+        throw new UnAuthorizedException('Invalid email or password');
       }
-      const valid = await bcrypt.compare(data.password, user.demoPasswordHash);
+      const valid = await comparePassword(data.password, user.passwordHash);
       if (!valid) {
-        throw new UnAuthorizedException('Invalid demo credentials');
+        throw new UnAuthorizedException('Invalid email or password');
       }
 
-      logger.info(`[Auth] Demo login for user ${user.id}`);
-      const accessToken = this.issueAccessToken(user.id, user.email);
-      const refreshToken = this.issueRefreshToken(user.id);
-      const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-      await this.userRepository.updateRefreshTokenHash(user.id, tokenHash);
-
-      return {
-        access_token: accessToken,
-        refresh_token: refreshToken,
-        user: {
-          id: user.id,
-          email: user.email,
-          first_name: user.firstName,
-          onboarding_complete: user.onboardingComplete,
-        },
-      };
+      logger.info(`[Auth] Login for user ${user.id}`);
+      return await this.issueTokensForUser(user);
     } catch (error) {
       if (error instanceof UnAuthorizedException) throw error;
-      logger.error(`Demo auth error - ${error}`);
-      throw new InternalServerException('Demo authentication failed');
+      logger.error(`Login error - ${error}`);
+      throw new InternalServerException('Login failed');
+    }
+  }
+
+  async register(data: RegisterDTO): Promise<AuthResponseDTO> {
+    try {
+      logger.info('[Auth] Register attempt');
+      const existingUser = await this.userRepository.findByEmail(data.email);
+      if (existingUser) {
+        throw new ConflictException('Email already registered');
+      }
+
+      const passwordHash = await hashPassword(data.password);
+      const user = await this.userRepository.createUser({
+        email: data.email,
+        firstName: data.first_name,
+        lastName: data.last_name,
+        passwordHash,
+      });
+      await this.authRepository.createAuthProvider({
+        userId: user.id,
+        provider: AuthProviderEnum.PASSWORD,
+        providerUserId: user.email,
+      });
+
+      logger.info(`[Auth] Registered user ${user.id}`);
+      return await this.issueTokensForUser(user);
+    } catch (error) {
+      if (error instanceof ConflictException) throw error;
+      logger.error(`Register error - ${error}`);
+      throw new InternalServerException('Registration failed');
     }
   }
 
@@ -204,6 +223,10 @@ class AuthService implements IAuthService {
     }
 
     logger.info(`[Auth] Issued tokens for user ${user.id} (${existing ? 'existing' : 'new'})`);
+    return await this.issueTokensForUser(user);
+  }
+
+  private async issueTokensForUser(user: IUser): Promise<AuthResponseDTO> {
     const accessToken = this.issueAccessToken(user.id, user.email);
     const refreshToken = this.issueRefreshToken(user.id);
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');

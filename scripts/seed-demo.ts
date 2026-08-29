@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import 'dotenv/config';
-import bcrypt from 'bcrypt';
 import { eq, inArray } from 'drizzle-orm';
 import Database from '../src/common/lib/database';
+import { hashPassword } from '../src/common/utils/password-encoder';
 import { UserSchema } from '../src/modules/user/user.schema';
+import AuthRepositoryImpl from '../src/modules/auth/auth.repository';
+import { AuthProviderEnum } from '../src/modules/auth/auth.enum';
 import { BankSchema } from '../src/modules/bank/bank.schema';
 import { AccountSchema } from '../src/modules/account/account.schema';
 import { TransactionSchema } from '../src/modules/transaction/transaction.schema';
@@ -61,7 +63,7 @@ async function seedDemo() {
   // ── 1. Find or create demo user ───────────────────────────────────────────
   let [user] = await db.client.select().from(UserSchema).where(eq(UserSchema.email, DEMO_EMAIL)).limit(1);
 
-  const hash = await bcrypt.hash(DEMO_PASSWORD, 12);
+  const hash = await hashPassword(DEMO_PASSWORD);
   const profile = {
     firstName: 'Alex',
     lastName: 'Adeyemi',
@@ -71,7 +73,7 @@ async function seedDemo() {
     incomeRange: '200000-500000',
     payFrequency: 'monthly',
     onboardingComplete: true,
-    demoPasswordHash: hash,
+    passwordHash: hash,
     dataRetentionMonths: 12,
   };
 
@@ -87,6 +89,20 @@ async function seedDemo() {
       .set({ ...profile, updatedAt: new Date() } as any)
       .where(eq(UserSchema.id, user.id));
     console.log(`  ✓ Updated demo user (id=${user.id})`);
+  }
+
+  const authRepository = new AuthRepositoryImpl(db);
+  const existingProvider = await authRepository.findAuthProvider({
+    provider: AuthProviderEnum.PASSWORD,
+    providerUserId: user.email,
+  });
+  if (!existingProvider) {
+    await authRepository.createAuthProvider({
+      userId: user.id,
+      provider: AuthProviderEnum.PASSWORD,
+      providerUserId: user.email,
+    });
+    console.log('  ✓ Linked password auth provider');
   }
 
   const userId = user.id;

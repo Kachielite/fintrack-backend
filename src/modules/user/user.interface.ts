@@ -12,7 +12,7 @@ export interface IUser {
   payFrequency: string | null;
   onboardingComplete: boolean;
   refreshTokenHash: string | null;
-  demoPasswordHash: string | null;
+  passwordHash: string | null;
   planTier: string;
   dataRetentionMonths: number;
   createdAt: Date;
@@ -23,6 +23,7 @@ export interface ICreateUser {
   email: string;
   firstName: string;
   lastName?: string;
+  passwordHash?: string;
 }
 
 export interface IUpdateUser {

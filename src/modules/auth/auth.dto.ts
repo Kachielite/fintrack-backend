@@ -17,11 +17,19 @@ export const RefreshTokenSchema = z.object({
 });
 export type RefreshTokenDTO = z.infer<typeof RefreshTokenSchema>;
 
-export const DemoAuthSchema = z.object({
+export const LoginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
 });
-export type DemoAuthDTO = z.infer<typeof DemoAuthSchema>;
+export type LoginDTO = z.infer<typeof LoginSchema>;
+
+export const RegisterSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  first_name: z.string().min(1, 'First name is required'),
+  last_name: z.string().optional(),
+});
+export type RegisterDTO = z.infer<typeof RegisterSchema>;
 
 export const AuthResponseSchema = z.object({
   access_token: z.string(),
