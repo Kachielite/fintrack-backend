@@ -19,6 +19,7 @@ export const TransactionQuerySchema = z.object({
   date_from: z.string().datetime().optional(),
   date_to: z.string().datetime().optional(),
   search: z.string().optional(),
+  exclude_from_totals: z.coerce.boolean().optional(),
 });
 export type TransactionQueryDTO = z.infer<typeof TransactionQuerySchema>;
 

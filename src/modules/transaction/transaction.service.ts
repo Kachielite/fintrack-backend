@@ -98,6 +98,7 @@ class TransactionService implements ITransactionService {
         dateFrom: query.date_from ? new Date(query.date_from) : undefined,
         dateTo: query.date_to ? new Date(query.date_to) : undefined,
         search: query.search,
+        excludeFromTotals: query.exclude_from_totals,
       });
     } catch (error) {
       logger.error(`Error listing transactions for user ${userId} - ${error}`);
@@ -512,6 +513,12 @@ class TransactionService implements ITransactionService {
     try {
       logger.info(`[Transaction] Bulk correcting ${data.ids.length} transactions for user ${userId}`);
       const updated = await this.transactionRepository.bulkUpdateCategory(userId, data.ids, data.category);
+      // Bulk-tagging a batch as self_transfer must also exclude them from totals —
+      // markTransfer already does both together for a single transaction; this keeps
+      // the two paths consistent instead of leaving a relabeled-but-still-counted batch.
+      if (data.category === CategoryEnum.SELF_TRANSFER) {
+        await this.transactionRepository.markExcludedFromTotals(data.ids);
+      }
       return { updated };
     } catch (error) {
       logger.error(`Error bulk correcting categories for user ${userId} - ${error}`);

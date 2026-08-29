@@ -64,6 +64,7 @@ export interface ITransactionFilter {
   dateFrom?: Date;
   dateTo?: Date;
   search?: string;
+  excludeFromTotals?: boolean;
 }
 
 export interface IDailySpendPoint {
