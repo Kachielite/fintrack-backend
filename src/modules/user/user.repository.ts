@@ -22,7 +22,12 @@ class UserRepositoryImpl implements IUserRepository {
   async createUser(data: ICreateUser): Promise<IUser> {
     const [row] = await this.db.client
       .insert(UserSchema)
-      .values({ email: data.email, firstName: data.firstName, lastName: data.lastName })
+      .values({
+        email: data.email,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        passwordHash: data.passwordHash,
+      })
       .returning();
     return row as IUser;
   }

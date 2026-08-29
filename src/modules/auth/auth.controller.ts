@@ -11,11 +11,13 @@ import {
   GoogleAuthSchema,
   AppleAuthSchema,
   RefreshTokenSchema,
-  DemoAuthSchema,
+  LoginSchema,
+  RegisterSchema,
   GoogleAuthDTO,
   AppleAuthDTO,
   RefreshTokenDTO,
-  DemoAuthDTO,
+  LoginDTO,
+  RegisterDTO,
 } from './auth.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
@@ -105,6 +107,90 @@ class AuthController extends BaseController {
 
   /**
    * @swagger
+   * /auth/login:
+   *   post:
+   *     tags: [Auth]
+   *     summary: Sign in with email and password
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [email, password]
+   *             properties:
+   *               email:
+   *                 type: string
+   *                 example: jane@example.com
+   *               password:
+   *                 type: string
+   *                 example: Sup3rSecret!
+   *     responses:
+   *       '200':
+   *         description: Auth tokens and user info
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/AuthResponse'
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/login', { validate: LoginSchema })
+  async login(req: Request) {
+    return await this.authService.login(req.body as LoginDTO);
+  }
+
+  /**
+   * @swagger
+   * /auth/register:
+   *   post:
+   *     tags: [Auth]
+   *     summary: Create an account with email and password
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [email, password, first_name]
+   *             properties:
+   *               email:
+   *                 type: string
+   *                 example: jane@example.com
+   *               password:
+   *                 type: string
+   *                 example: Sup3rSecret!
+   *               first_name:
+   *                 type: string
+   *                 example: Jane
+   *               last_name:
+   *                 type: string
+   *                 example: Doe
+   *     responses:
+   *       '200':
+   *         description: Auth tokens and user info
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/AuthResponse'
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '409':
+   *         description: Email already registered
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/register', { validate: RegisterSchema })
+  async register(req: Request) {
+    return await this.authService.register(req.body as RegisterDTO);
+  }
+
+  /**
+   * @swagger
    * /auth/refresh:
    *   post:
    *     tags: [Auth]
@@ -132,11 +218,6 @@ class AuthController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
-  @Post('/demo', { validate: DemoAuthSchema })
-  async demoAuth(req: Request) {
-    return await this.authService.demoAuth(req.body as DemoAuthDTO);
-  }
-
   @Post('/refresh', { validate: RefreshTokenSchema })
   async refresh(req: Request) {
     return await this.authService.refreshToken(req.body as RefreshTokenDTO);
