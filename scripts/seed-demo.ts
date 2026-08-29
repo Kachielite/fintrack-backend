@@ -471,6 +471,32 @@ async function seedDemo() {
     reference: 'TRF/OWN/002',
     balance: null,
   });
+  // Same merchant, from a month back, but never picked up as a transfer —
+  // demonstrates the "confirm one, apply to similar" bulk flow on Review
+  // Transfers: confirming the instance above should offer to bulk-apply
+  // self_transfer to this one too.
+  transactions.push({
+    userId,
+    bankId: accessBankId,
+    accountId: accessAccount.id,
+    emailConnectionId: null,
+    parserTemplateId: null,
+    gmailMessageId: null,
+    merchant: 'GTBank Transfer - Own Account',
+    category: 'peer_to_peer_transfer',
+    transactionType: 'debit',
+    amount: -20000,
+    currency: 'NGN',
+    refAmount: -20000,
+    refCurrency: 'NGN',
+    exchangeRateUsed: null,
+    transactionDate: daysAgo(33, 15, 0),
+    status: 'verified',
+    originalMerchant: 'GTBank Transfer - Own Account',
+    originalCategory: 'peer_to_peer_transfer',
+    reference: 'TRF/OWN/000',
+    balance: null,
+  });
 
   // ── 4f. Compute a running balance per account ─────────────────────────────
   // The accounts list shows each account's balance as the most recent
