@@ -136,6 +136,8 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     if (filter.dateFrom) conditions.push(gte(TransactionSchema.transactionDate, filter.dateFrom));
     if (filter.dateTo) conditions.push(lte(TransactionSchema.transactionDate, filter.dateTo));
     if (filter.search) conditions.push(ilike(TransactionSchema.merchant, `%${filter.search}%`));
+    if (filter.excludeFromTotals !== undefined)
+      conditions.push(eq(TransactionSchema.excludeFromTotals, filter.excludeFromTotals));
 
     const whereClause = and(...conditions);
     const offset = (filter.page - 1) * filter.limit;
