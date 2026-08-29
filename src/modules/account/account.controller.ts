@@ -105,16 +105,19 @@ class AccountController extends BaseController {
    *   post:
    *     tags: [Accounts]
    *     summary: Re-scan the user's full transaction history for transfers/conversions
-   *     description: Idempotent — safe to run more than once. Only touches transactions not already excluded from totals.
+   *     description: >
+   *       Idempotent — safe to run more than once. Only touches transactions not already
+   *       excluded from totals. Runs in the background and acknowledges immediately; the
+   *       result arrives as a transfer_scan_complete (or transfer_scan_failed) notification.
    *     security:
    *       - bearerAuth: []
    *     responses:
    *       '200':
-   *         description: Rescan result
+   *         description: Scan started
    *         content:
    *           application/json:
    *             schema:
-   *               $ref: '#/components/schemas/RescanTransfersResult'
+   *               $ref: '#/components/schemas/SuccessResponse'
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
    *       '500':
@@ -123,7 +126,7 @@ class AccountController extends BaseController {
   @Post('/rescan-transfers')
   async rescanTransfers(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    return await this.transferDetectionService.rescanForUser(userId);
+    return await this.transferDetectionService.rescanForUserAsync(userId);
   }
 }
 
