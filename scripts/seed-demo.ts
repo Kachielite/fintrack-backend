@@ -20,8 +20,6 @@ import TransferLinkRepositoryImpl from '../src/modules/account/transfer-link.rep
 import AccountTransferRuleRepositoryImpl from '../src/modules/account/account-transfer-rule.repository';
 import ExchangeRateRepositoryImpl from '../src/modules/exchange-rate/exchange-rate.repository';
 import ExchangeRateService from '../src/modules/exchange-rate/exchange-rate.service';
-import NotificationRepositoryImpl from '../src/modules/notification/notification.repository';
-import NotificationService from '../src/modules/notification/notification.service';
 import TransferDetectionService from '../src/modules/account/transfer-detection.service';
 import { ITransaction } from '../src/modules/transaction/transaction.interface';
 
@@ -533,13 +531,11 @@ async function seedDemo() {
   const transferLinkRepository = new TransferLinkRepositoryImpl(db);
   const accountTransferRuleRepository = new AccountTransferRuleRepositoryImpl(db);
   const exchangeRateService = new ExchangeRateService(new ExchangeRateRepositoryImpl(db));
-  const notificationService = new NotificationService(new NotificationRepositoryImpl(db));
   const transferDetectionService = new TransferDetectionService(
     transactionRepository,
     transferLinkRepository,
     exchangeRateService,
     accountTransferRuleRepository,
-    notificationService,
   );
   const { scanned, linked } = await transferDetectionService.rescanForUser(userId);
   console.log(`  ✓ Transfer detection rescan: ${scanned} scanned, ${linked} linked`);
