@@ -8,6 +8,8 @@ import { IAccountTransferRuleRepository } from './account-transfer-rule.reposito
 import { TransferRuleDecision } from './account-transfer-rule.interface';
 import { InternalServerException } from '@/common/exception';
 import logger from '@/common/lib/logger';
+import { IGeneralResponse } from '@/common/types/interface';
+import NotificationService, { INotificationService } from '@/modules/notification/notification.service';
 
 // Narration words that carry no identifying signal — stripped before
 // comparing two legs' merchant text for a shared counterparty name.
@@ -61,6 +63,14 @@ export interface ITransferDetectionService {
    */
   rescanForUser(userId: number): Promise<{ scanned: number; linked: number }>;
   /**
+   * Same scan as `rescanForUser`, but kicked off in the background and
+   * acknowledged immediately — a full-history scan can run well past a
+   * normal request timeout, so the caller gets a "started" response right
+   * away and a notification once it's actually done, the same way a manual
+   * Gmail sync reports back via `sync_complete`/`sync_failed`.
+   */
+  rescanForUserAsync(userId: number): Promise<IGeneralResponse<null>>;
+  /**
    * Persists the user's explicit "always/never treat transfers between these
    * two accounts this way" decision, so future transactions on this specific
    * pair skip the amount/FX guesswork (or are never flagged at all).
@@ -75,6 +85,7 @@ class TransferDetectionService implements ITransferDetectionService {
     @inject('ITransferLinkRepository') private transferLinkRepository: ITransferLinkRepository,
     @inject('IExchangeRateService') private exchangeRateService: IExchangeRateService,
     @inject('IAccountTransferRuleRepository') private ruleRepository: IAccountTransferRuleRepository,
+    @inject(NotificationService) private notificationService: INotificationService,
   ) {}
 
   async detectForTransaction(transaction: ITransaction): Promise<void> {
@@ -259,6 +270,37 @@ class TransferDetectionService implements ITransferDetectionService {
       logger.error(`[TransferDetection] Rescan failed for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to rescan transactions for transfers');
     }
+  }
+
+  async rescanForUserAsync(userId: number): Promise<IGeneralResponse<null>> {
+    setImmediate(async () => {
+      try {
+        const { scanned, linked } = await this.rescanForUser(userId);
+        await this.notificationService.create({
+          userId,
+          type: 'transfer_scan_complete',
+          title: linked > 0 ? `Found ${linked} transfer${linked === 1 ? '' : 's'}` : 'Transfer scan complete',
+          body:
+            linked > 0
+              ? `Checked ${scanned} transaction${scanned === 1 ? '' : 's'} and excluded ${linked} transfer${linked === 1 ? '' : 's'} from your totals. Tap to review.`
+              : `Checked ${scanned} transaction${scanned === 1 ? '' : 's'}, nothing new to review.`,
+          data: { scanned, linked },
+        });
+      } catch (error) {
+        logger.error(`[TransferDetection] Background rescan failed for user ${userId} - ${error}`);
+        await this.notificationService
+          .create({
+            userId,
+            type: 'transfer_scan_failed',
+            title: 'Transfer scan failed',
+            body: 'Something went wrong while scanning your transactions. Please try again.',
+            data: {},
+          })
+          .catch(() => {});
+      }
+    });
+
+    return { success: true, message: 'Transfer scan started', data: null };
   }
 
   async rememberDecision(
