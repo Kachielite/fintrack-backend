@@ -682,7 +682,7 @@ async function seedDemo() {
     {
       userId,
       type: InsightTypeEnum.SUBSCRIPTION_ALERT,
-      message: 'Netflix, Spotify and DSTV together now cost more than they did six months ago — worth a quick audit.',
+      message: 'Netflix, Spotify and DSTV together now cost more than they did six months ago, worth a quick audit.',
       contextData: { category: 'subscriptions', services: ['Netflix', 'Spotify', 'DSTV Compact'] },
       isRead: true,
       expiresAt: null,
@@ -691,7 +691,7 @@ async function seedDemo() {
     {
       userId,
       type: InsightTypeEnum.POSITIVE_REINFORCEMENT,
-      message: `Groceries have stayed comfortably under budget for the last two months — nice and steady.`,
+      message: `Groceries have stayed comfortably under budget for the last two months, nice and steady.`,
       contextData: { category: 'groceries' },
       isRead: true,
       expiresAt: null,
@@ -724,7 +724,7 @@ async function seedDemo() {
     {
       userId,
       type: 'budget_warning',
-      title: 'Heads up — Dining & Food Delivery budget getting close',
+      title: 'Heads up: Dining & Food Delivery budget getting close',
       body: "You're approaching your dining budget for this month. You're getting close.",
       data: JSON.stringify({ category: 'dining_food_delivery' }),
       readAt: null,
@@ -742,7 +742,7 @@ async function seedDemo() {
     {
       userId,
       type: 'sync_complete',
-      title: 'Sync complete — nothing new',
+      title: 'Sync complete, nothing new',
       body: 'No new bank emails found since your last sync.',
       data: JSON.stringify({ processedCount: 0 }),
       readAt: daysAgo(6, 9, 5),
