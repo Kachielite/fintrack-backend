@@ -283,7 +283,7 @@ class TransferDetectionService implements ITransferDetectionService {
           body:
             linked > 0
               ? `Checked ${scanned} transaction${scanned === 1 ? '' : 's'} and excluded ${linked} transfer${linked === 1 ? '' : 's'} from your totals. Tap to review.`
-              : `Checked ${scanned} transaction${scanned === 1 ? '' : 's'} — nothing new to review.`,
+              : `Checked ${scanned} transaction${scanned === 1 ? '' : 's'}, nothing new to review.`,
           data: { scanned, linked },
         });
       } catch (error) {
