@@ -64,6 +64,20 @@ function monthsBetween(from: Date, to: Date): number {
   return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
 }
 
+// "Aug 17–23", or "Aug 28–Sep 3" when the week spans a month boundary.
+function formatWeeklyPeriodLabel(start: Date, end: Date): string {
+  const startLabel = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endLabel = start.getMonth() === end.getMonth()
+    ? end.toLocaleDateString('en-US', { day: 'numeric' })
+    : end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `${startLabel}–${endLabel}`;
+}
+
+// "August"
+function formatMonthlyPeriodLabel(start: Date): string {
+  return start.toLocaleDateString('en-US', { month: 'long' });
+}
+
 @injectable()
 class InsightService implements IInsightService {
   private openai: OpenAI;
@@ -286,7 +300,7 @@ Return JSON only.`,
         userId,
         type: 'insight_generated',
         title: 'Iris has new insights for you',
-        body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
+        body: `Your weekly report (${formatWeeklyPeriodLabel(weekStart, weekEnd)}) is ready. Tap to see what Iris found.`,
         data: {},
       }).catch(() => {});
     } catch (error) {
@@ -454,7 +468,7 @@ Return JSON only.`,
         userId,
         type: 'insight_generated',
         title: 'Iris has new insights for you',
-        body: 'Your monthly financial report is ready. Tap to see what Iris found.',
+        body: `Your ${formatMonthlyPeriodLabel(monthStart)} report is ready. Tap to see what Iris found.`,
         data: {},
       }).catch(() => {});
     } catch (error) {
