@@ -31,6 +31,9 @@ export interface IUpdateUser {
   lastName?: string;
   refCurrency?: CurrencyEnum;
   advisorTone?: AdvisorToneEnum;
+  goalType?: GoalTypeEnum;
+  incomeRange?: string;
+  payFrequency?: PayFrequencyEnum;
 }
 
 export interface ICompleteOnboarding {

@@ -6,6 +6,9 @@ export const UpdateUserSchema = z.object({
   last_name: z.string().optional(),
   ref_currency: z.nativeEnum(CurrencyEnum).optional(),
   advisor_tone: z.nativeEnum(AdvisorToneEnum).optional(),
+  goal_type: z.nativeEnum(GoalTypeEnum).optional(),
+  income_range: z.string().min(1).optional(),
+  pay_frequency: z.nativeEnum(PayFrequencyEnum).optional(),
 });
 export type UpdateUserDTO = z.infer<typeof UpdateUserSchema>;
 

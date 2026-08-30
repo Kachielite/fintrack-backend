@@ -60,6 +60,9 @@ class UserRepositoryImpl implements IUserRepository {
     if (data.lastName !== undefined) updateData.lastName = data.lastName;
     if (data.refCurrency !== undefined) updateData.refCurrency = data.refCurrency;
     if (data.advisorTone !== undefined) updateData.advisorTone = data.advisorTone;
+    if (data.goalType !== undefined) updateData.goalType = data.goalType;
+    if (data.incomeRange !== undefined) updateData.incomeRange = data.incomeRange;
+    if (data.payFrequency !== undefined) updateData.payFrequency = data.payFrequency;
 
     const [row] = await this.db.client
       .update(UserSchema)
