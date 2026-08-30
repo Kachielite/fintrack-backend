@@ -2,7 +2,7 @@ import { inject, injectable } from 'tsyringe';
 import { and, eq, gt, isNull, lte, or, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { InsightSchema } from './insight.schema';
-import { IInsight } from './insight.interface';
+import { IInsight, InsightPeriodType } from './insight.interface';
 
 export interface IInsightRepository {
   create(data: {
@@ -10,11 +10,14 @@ export interface IInsightRepository {
     type: string;
     message: string;
     contextData?: unknown;
+    periodType?: InsightPeriodType;
+    periodStart?: Date;
+    periodEnd?: Date;
     expiresAt?: Date;
   }): Promise<IInsight>;
   findActive(userId: number, unreadOnly: boolean): Promise<IInsight[]>;
   markRead(id: number, userId: number): Promise<void>;
-  hasRecentInsight(userId: number, type: string, since: Date): Promise<boolean>;
+  hasReportForPeriod(userId: number, periodType: InsightPeriodType, periodStart: Date): Promise<boolean>;
   deleteExpired(userId: number): Promise<void>;
   deleteAllForUser(userId: number): Promise<void>;
 }
@@ -28,6 +31,9 @@ class InsightRepositoryImpl implements IInsightRepository {
     type: string;
     message: string;
     contextData?: unknown;
+    periodType?: InsightPeriodType;
+    periodStart?: Date;
+    periodEnd?: Date;
     expiresAt?: Date;
   }): Promise<IInsight> {
     const [row] = await this.db.client
@@ -37,6 +43,9 @@ class InsightRepositoryImpl implements IInsightRepository {
         type: data.type,
         message: data.message,
         contextData: data.contextData as any,
+        periodType: data.periodType,
+        periodStart: data.periodStart,
+        periodEnd: data.periodEnd,
         expiresAt: data.expiresAt,
       })
       .returning();
@@ -65,15 +74,15 @@ class InsightRepositoryImpl implements IInsightRepository {
       .where(and(eq(InsightSchema.id, id), eq(InsightSchema.userId, userId)));
   }
 
-  async hasRecentInsight(userId: number, type: string, since: Date): Promise<boolean> {
+  async hasReportForPeriod(userId: number, periodType: InsightPeriodType, periodStart: Date): Promise<boolean> {
     const rows = await this.db.client
       .select({ id: InsightSchema.id })
       .from(InsightSchema)
       .where(
         and(
           eq(InsightSchema.userId, userId),
-          eq(InsightSchema.type, type),
-          gt(InsightSchema.createdAt, since),
+          eq(InsightSchema.periodType, periodType),
+          eq(InsightSchema.periodStart, periodStart),
         ),
       )
       .limit(1);
