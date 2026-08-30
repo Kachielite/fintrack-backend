@@ -5,6 +5,7 @@ import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import InsightService, { IInsightService } from './insight.service';
 import { InsightQuerySchema, InsightQueryDTO } from './insight.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
+import { ConflictException } from '@/common/exception';
 
 @injectable()
 @Controller('/insights')
@@ -86,9 +87,32 @@ class InsightController extends BaseController {
     return await this.service.markRead(id, userId);
   }
 
+  /**
+   * @swagger
+   * /insights/generate:
+   *   post:
+   *     tags: [Insights]
+   *     summary: Trigger this week's report generation for the current user
+   *     description: Rejects with 409 if this week's report already exists or is currently generating.
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       '202':
+   *         description: Generation started
+   *       '409':
+   *         description: This week's report already exists or is already generating
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   */
   @Post('/generate', { statusCode: 202 })
   async generate(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+
+    const canGenerate = await this.service.canGenerateWeeklyReport(userId);
+    if (!canGenerate) {
+      throw new ConflictException("You already have this week's report — check back next Monday.");
+    }
+
     this.service.generateWeeklyReportForUser(userId).catch(() => null);
     return { message: 'Insight generation started' };
   }
