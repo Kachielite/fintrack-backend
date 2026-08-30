@@ -66,6 +66,18 @@ class InsightService implements IInsightService {
       const user = await this.userRepository.findById(userId);
       if (!user) return;
 
+      const reportDedupWindow = new Date();
+      reportDedupWindow.setHours(reportDedupWindow.getHours() - 20);
+      const alreadyGenerated = await this.insightRepository.hasRecentInsight(
+        userId,
+        InsightTypeEnum.REPORT,
+        reportDedupWindow,
+      );
+      if (alreadyGenerated) {
+        logger.info(`Skipping insight generation for user ${userId} — report already generated recently`);
+        return;
+      }
+
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       const now = new Date();
@@ -128,28 +140,29 @@ class InsightService implements IInsightService {
         messages: [
           {
             role: 'system',
-            content: `You are Iris, a warm and non-judgmental personal financial advisor. You observe patterns in a user's spending data and surface one to three insights that are specific, actionable, and forward-looking. You never shame. You always frame observations as opportunities.
+            content: `You are Iris, a warm and non-judgmental personal financial advisor. You read a user's spending data and write ONE concise report — not a list of separate observations. It should read in about fifteen seconds, not like a document. You never shame. You always frame observations as opportunities.
 
 The user's goal is ${user.goalType} and their preferred tone is ${user.advisorTone}.
 
-Use top_merchants (real merchant names like Glovo, Netflix, Cloudflare, etc.) to name specific merchants in insights even when the category is "other".
+Use top_merchants (real merchant names like Glovo, Netflix, Cloudflare, etc.) to name specific merchants when relevant, even when the category is "other".
 
-Return a JSON object: { "insights": [ ...array of insight objects... ] }
+Be selective. Pick the 2-3 sharpest, most specific findings in the data — do not try to cover every category evenly. Skip anything unremarkable.
 
-Each insight object must have:
-- "type": one of spending_pattern | budget_warning | goal_progress | fx_impact | subscription_alert | positive_reinforcement
-- "message": SHORT teaser shown on the home card. 1 punchy sentence, max 15 words. e.g. "Your weekend food spend is 3× your weekday average."
-- "title": Headline shown in the detail sheet. Direct and specific. e.g. "Your weekends are 3× your weekdays."
-- "body": 1–2 sentences of supporting detail for the sheet. e.g. "Average daily food spend this month. Saturdays and Sundays stand out clearly."
-- "action_text": Specific, quantified recommendation. e.g. "Cutting weekend food spend to weekday levels saves roughly ₦18,000 a week — ₦72,000 a month."
+Return a JSON object: { "report": { ...report object... } }
+
+The report object must have:
+- "headline": ONE punchy sentence capturing the single most important thing this period. Max 15 words. e.g. "Your weekend food spend is 3× your weekday average."
+- "findings": array of 2-3 short, specific, quantified findings (strings), each 1-2 sentences. e.g. "You spent ₦42,000 at Glovo this month, up 60% from last month."
 - "chart_type": "bar_by_category" | "bar_by_merchant" | null
-- "chart_data": array of { "label": string, "value": number, "highlight": boolean } — 5–7 items, sorted descending by value. highlight=true for the notable ones. null if chart_type is null.
+- "chart_data": array of { "label": string, "value": number, "highlight": boolean } — 5–7 items, sorted descending by value, illustrating whichever finding the chart best supports. highlight=true for the notable ones. null if chart_type is null.
+- "closing": 1-2 sentence closing paragraph that explicitly compares this period's spending against the user's real goals (the "goals" array — name a goal by name when relevant). If "goals" is empty, gently note that setting one would help, without being pushy.
+- "goal_alignment": { "status": one of "on_track" | "ahead" | "behind" | "no_goals", "summary": one sentence explaining the status, naming a specific goal when possible }
 
 Return JSON only.`,
           },
           {
             role: 'user',
-            content: `Generate financial insights for this user: ${JSON.stringify(context)}`,
+            content: `Generate a financial report for this user: ${JSON.stringify(context)}`,
           },
         ],
         response_format: { type: 'json_object' },
@@ -166,66 +179,53 @@ Return JSON only.`,
         }).catch(() => null);
       }
 
-      const raw = JSON.parse(response.choices[0].message.content || '{"insights":[]}');
-      const insights: {
-        type: string;
-        message: string;
-        title?: string;
-        body?: string;
-        action_text?: string;
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      const report: {
+        headline?: string;
+        findings?: string[];
         chart_type?: string | null;
         chart_data?: { label: string; value: number; highlight: boolean }[] | null;
-        context_data?: unknown;
-      }[] = raw.insights || raw;
+        closing?: string;
+        goal_alignment?: { status?: string; summary?: string };
+      } = raw.report || raw;
+
+      if (!report.headline) {
+        logger.warn(`Insight generation for user ${userId} returned no headline — skipping`);
+        await this.insightRepository.deleteExpired(userId);
+        return;
+      }
 
       const expiry = new Date();
       expiry.setDate(expiry.getDate() + 7);
 
-      const fortyEightHoursAgo = new Date();
-      fortyEightHoursAgo.setHours(fortyEightHoursAgo.getHours() - 48);
-
-      let newInsightCount = 0;
-      for (const insight of insights) {
-        const type = Object.values(InsightTypeEnum).includes(insight.type as InsightTypeEnum)
-          ? insight.type
-          : InsightTypeEnum.SPENDING_PATTERN;
-
-        const alreadyExists = await this.insightRepository.hasRecentInsight(
-          userId,
-          type,
-          fortyEightHoursAgo,
-        );
-        if (alreadyExists) continue;
-
-        await this.insightRepository.create({
-          userId,
-          type,
-          message: insight.message,
-          contextData: {
-            title: insight.title ?? insight.message,
-            body: insight.body ?? null,
-            action_text: insight.action_text ?? null,
-            chart_type: insight.chart_type ?? null,
-            chart_data: insight.chart_data ?? null,
+      await this.insightRepository.create({
+        userId,
+        type: InsightTypeEnum.REPORT,
+        message: report.headline,
+        contextData: {
+          headline: report.headline,
+          findings: report.findings ?? [],
+          chart_type: report.chart_type ?? null,
+          chart_data: report.chart_data ?? null,
+          closing: report.closing ?? null,
+          goal_alignment: {
+            status: report.goal_alignment?.status ?? (goals.length > 0 ? 'behind' : 'no_goals'),
+            summary: report.goal_alignment?.summary ?? '',
           },
-          expiresAt: expiry,
-        });
-        newInsightCount++;
-      }
+        },
+        expiresAt: expiry,
+      });
 
       await this.insightRepository.deleteExpired(userId);
-      logger.info(`Insights generated for user ${userId} (${newInsightCount} new)`);
+      logger.info(`Insight report generated for user ${userId}`);
 
-      // Only notify if there are actually new insights to show.
-      if (newInsightCount > 0) {
-        this.notificationService.create({
-          userId,
-          type: 'insight_generated',
-          title: 'Iris has new insights for you',
-          body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
-          data: {},
-        }).catch(() => {});
-      }
+      this.notificationService.create({
+        userId,
+        type: 'insight_generated',
+        title: 'Iris has new insights for you',
+        body: 'Your weekly financial summary is ready. Tap to see what Iris found.',
+        data: {},
+      }).catch(() => {});
     } catch (error) {
       logger.error(`Error generating insights for user ${userId} - ${error}`);
     }
