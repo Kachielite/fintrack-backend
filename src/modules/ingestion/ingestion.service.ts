@@ -58,6 +58,69 @@ interface CategoryResolution {
   verified: boolean;
 }
 
+// A transaction created by processMessage, threaded back to the poll loop so
+// the sync-complete notification can name real merchants/amounts instead of
+// just reporting a count.
+export interface ProcessedTransaction {
+  merchant: string;
+  category: string;
+  refAmount: number;
+  refCurrency: string;
+}
+
+// Kept in sync with the frontend's CATEGORY_LABELS
+// (fintrack-frontend/src/features/transactions/transactions.constants.ts) —
+// only used here for notification copy, so an exact 1:1 isn't load-bearing.
+const CATEGORY_LABELS: Record<string, string> = {
+  peer_to_peer_transfer: 'Peer Transfer',
+  business_payment: 'Business Payment',
+  subscriptions: 'Subscriptions',
+  entertainment_leisure: 'Entertainment',
+  mobile_internet: 'Mobile & Internet',
+  utilities: 'Utilities',
+  groceries: 'Groceries',
+  retail_ecommerce: 'Retail & Shopping',
+  dining_food_delivery: 'Dining & Delivery',
+  transport: 'Transport',
+  fuel_auto: 'Fuel & Auto',
+  travel: 'Travel',
+  bank_charges: 'Bank Charges',
+  currency_conversion: 'FX Conversion',
+  self_transfer: 'Self-Transfer',
+  investment: 'Investment',
+  savings: 'Savings',
+  rent_housing: 'Rent & Housing',
+  salary_wages: 'Salary & Wages',
+  refunds_reimbursements: 'Refunds',
+  healthcare: 'Healthcare',
+  education: 'Education',
+  charity_donations: 'Charity',
+  cash_withdrawal: 'Cash Withdrawal',
+  family_support: 'Family Support',
+  beauty_personal_care: 'Beauty & Care',
+  gifts_social: 'Gifts & Social',
+  uncategorized: 'Uncategorized',
+};
+
+function categoryLabel(slug: string): string {
+  return CATEGORY_LABELS[slug] ?? slug.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  NGN: '₦',
+  USD: '$',
+  GBP: '£',
+  EUR: '€',
+  GHS: '₵',
+  KES: 'KSh',
+  ZAR: 'R',
+};
+
+function formatAmount(amount: number, currency: string): string {
+  const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
+  return `${symbol}${Math.round(amount).toLocaleString('en-US')}`;
+}
+
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
   pollConnection(connectionId: number, source?: TriggerSource): Promise<void>;
@@ -68,7 +131,7 @@ export interface IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
-  ): Promise<boolean>;
+  ): Promise<ProcessedTransaction | null>;
 }
 
 @injectable()
@@ -181,6 +244,7 @@ class IngestionService implements IIngestionService {
 
       let processedCount = 0;
       let doneIndex = 0;
+      const processedTransactions: ProcessedTransaction[] = [];
 
       for (const msg of messages) {
         if (!msg.id) continue;
@@ -209,8 +273,11 @@ class IngestionService implements IIngestionService {
           const subject = subjectHeader?.value || '';
           const body = this.extractEmailBody(msgResp.data.payload);
 
-          const wasTransaction = await this.processMessage(connectionId, msg.id, body, subject, from);
-          if (wasTransaction) processedCount++;
+          const processed = await this.processMessage(connectionId, msg.id, body, subject, from);
+          if (processed) {
+            processedCount++;
+            processedTransactions.push(processed);
+          }
         } catch (err) {
           logger.error(
             `Error processing message ${msg.id} for connection ${connectionId} - ${err}`,
@@ -239,10 +306,7 @@ class IngestionService implements IIngestionService {
           userId,
           type: 'sync_complete',
           title: processedCount > 0 ? 'Sync complete' : 'Sync complete — nothing new',
-          body:
-            processedCount > 0
-              ? `${processedCount} new transaction${processedCount !== 1 ? 's' : ''} organised from your Gmail`
-              : 'No new bank emails were found in your label.',
+          body: this.buildSyncNotificationBody(processedTransactions),
           data: { added: processedCount, connectionId },
         });
       }
@@ -293,23 +357,57 @@ class IngestionService implements IIngestionService {
     }
   }
 
+  // Single/few transactions: name them. Bulk (first-time connect, large cron
+  // batch): switch to a summarized digest instead of naming each one.
+  private buildSyncNotificationBody(transactions: ProcessedTransaction[]): string {
+    const BULK_THRESHOLD = 5;
+
+    if (transactions.length === 0) {
+      return 'No new bank emails were found in your label.';
+    }
+
+    if (transactions.length > BULK_THRESHOLD) {
+      const total = transactions.reduce((acc, t) => acc + t.refAmount, 0);
+      const currency = transactions[0].refCurrency;
+
+      const categoryCounts = transactions.reduce((acc: Record<string, number>, t) => {
+        acc[t.category] = (acc[t.category] || 0) + 1;
+        return acc;
+      }, {});
+      const topCategories = Object.entries(categoryCounts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 2)
+        .map(([cat]) => categoryLabel(cat));
+      const mostly = topCategories.length > 0 ? `, mostly ${topCategories.join(' and ')}` : '';
+
+      return `${transactions.length} transactions added — ${formatAmount(total, currency)} total${mostly}`;
+    }
+
+    const named = transactions.map((t) => `${formatAmount(t.refAmount, t.refCurrency)} at ${t.merchant}`);
+    const joined = named.length === 1
+      ? named[0]
+      : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`;
+
+    return `${joined} added`;
+  }
+
   async processMessage(
     connectionId: number,
     messageId: string,
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
-  ): Promise<boolean> {
+  ): Promise<ProcessedTransaction | null> {
     try {
       const connection = await this.connectionRepository.findByIdOnly(connectionId);
       const userId = connection?.userId;
-      if (!userId) return false;
+      if (!userId) return null;
 
       const alreadyProcessed = await this.ingestionRepository.isAlreadyProcessedForUser(
         userId,
         messageId,
       );
-      if (alreadyProcessed) return false;
+      if (alreadyProcessed) return null;
 
       const senderEmail = this.extractEmail(fromAddress);
       const transactionSignal = this.getTransactionSignal(emailBody, emailSubject);
@@ -342,7 +440,7 @@ class IngestionService implements IIngestionService {
             gmailMessageId: messageId,
             outcome: 'non_transaction',
           });
-          return false;
+          return null;
         }
 
         logger.info(`[Bank] Unknown sender ${senderEmail} — asking AI to identify bank, messageId=${messageId}`);
@@ -359,7 +457,7 @@ class IngestionService implements IIngestionService {
               gmailMessageId: messageId,
               outcome: 'non_transaction',
             });
-            return false;
+            return null;
           }
           throw err;
         }
@@ -371,7 +469,7 @@ class IngestionService implements IIngestionService {
             gmailMessageId: messageId,
             outcome: 'non_transaction',
           });
-          return false;
+          return null;
         }
 
         if (domainHintBank && domainHintBank.shortCode !== identified.shortCode) {
@@ -409,11 +507,11 @@ class IngestionService implements IIngestionService {
           gmailMessageId: messageId,
           outcome: 'non_transaction',
         });
-        return false;
+        return null;
       }
 
       const user = await this.userRepository.findById(userId);
-      if (!user) return false;
+      if (!user) return null;
 
       const dbCategories = await this.getCachedCategories();
 
@@ -507,7 +605,7 @@ class IngestionService implements IIngestionService {
             gmailMessageId: messageId,
             outcome: 'parsed',
           });
-          return false;
+          return null;
         }
 
         const refAmount = parsedAmount
@@ -569,7 +667,7 @@ class IngestionService implements IIngestionService {
         logger.info(
           `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
         );
-        return true;
+        return { merchant, category, refAmount, refCurrency: user.refCurrency };
         }
         }
       }
@@ -596,7 +694,7 @@ class IngestionService implements IIngestionService {
           gmailMessageId: messageId,
           outcome: 'non_transaction',
         });
-        return false;
+        return null;
       }
 
       const extractedCurrency = this.normalizeCurrency(extractedOrFallback.currency as string | undefined) || user.refCurrency;
@@ -616,7 +714,7 @@ class IngestionService implements IIngestionService {
           gmailMessageId: messageId,
           outcome: 'non_transaction',
         });
-        return false;
+        return null;
       }
       const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
       const rawMerchantAI = (extractedOrFallback.merchant as string) || undefined;
@@ -658,7 +756,7 @@ class IngestionService implements IIngestionService {
           gmailMessageId: messageId,
           outcome: 'parsed',
         });
-        return false;
+        return null;
       }
 
       const refAmount = parsedAmount
@@ -717,7 +815,7 @@ class IngestionService implements IIngestionService {
       // has this sample available, instead of racing an un-awaited capture.
       this.scheduleTemplateGeneration(bank.id, emailBody, emailSubject, bankMatchSource);
 
-      return true;
+      return { merchant, category, refAmount, refCurrency: user.refCurrency };
     } catch (error) {
       logger.error(`Error processing message ${messageId} - ${error}`);
       await this.ingestionRepository.markProcessed({
@@ -725,7 +823,7 @@ class IngestionService implements IIngestionService {
         gmailMessageId: messageId,
         outcome: 'failed',
       });
-      return false;
+      return null;
     }
   }
 
