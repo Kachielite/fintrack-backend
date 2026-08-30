@@ -21,7 +21,7 @@ export async function registerInsightDependencies(): Promise<void> {
     const service = container.resolve(InsightService);
     const userRepository = container.resolve<IUserRepository>('IUserRepository');
     const users = await userRepository.findAll();
-    await Promise.all(users.map((u) => service.generateForUser(u.id)));
+    await Promise.all(users.map((u) => service.generateWeeklyReportForUser(u.id)));
   });
   logger.info('InsightGenerationScheduler started (nightly at 2:30 AM).');
 }
