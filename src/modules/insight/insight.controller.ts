@@ -89,7 +89,7 @@ class InsightController extends BaseController {
   @Post('/generate', { statusCode: 202 })
   async generate(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    this.service.generateForUser(userId).catch(() => null);
+    this.service.generateWeeklyReportForUser(userId).catch(() => null);
     return { message: 'Insight generation started' };
   }
 }
