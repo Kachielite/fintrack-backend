@@ -247,7 +247,7 @@ class IngestionService implements IIngestionService {
         });
       }
 
-      if (processedCount > 0) {
+      if (processedCount > 0 && CONSTANTS.FEATURES.BUDGETING_ENABLED) {
         this.budgetService.checkBudgetAlerts(userId).catch(() => {});
       }
     } catch (error) {
