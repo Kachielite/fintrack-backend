@@ -22,6 +22,23 @@ export interface IInsightService {
   generateForUser(userId: number): Promise<void>;
 }
 
+// The current ISO week (Monday 00:00:00 through Sunday 23:59:59), used only to
+// label/dedup the report by period — the analysis lookback below stays a
+// generous 30-day trailing window regardless, for richer pattern detection.
+function getCurrentWeekBounds(now: Date): { start: Date; end: Date } {
+  const start = new Date(now);
+  const day = start.getDay();
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  start.setDate(start.getDate() - diffToMonday);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
+}
+
 @injectable()
 class InsightService implements IInsightService {
   private openai: OpenAI;
@@ -66,21 +83,16 @@ class InsightService implements IInsightService {
       const user = await this.userRepository.findById(userId);
       if (!user) return;
 
-      const reportDedupWindow = new Date();
-      reportDedupWindow.setHours(reportDedupWindow.getHours() - 20);
-      const alreadyGenerated = await this.insightRepository.hasRecentInsight(
-        userId,
-        InsightTypeEnum.REPORT,
-        reportDedupWindow,
-      );
+      const now = new Date();
+      const { start: weekStart, end: weekEnd } = getCurrentWeekBounds(now);
+      const alreadyGenerated = await this.insightRepository.hasReportForPeriod(userId, 'weekly', weekStart);
       if (alreadyGenerated) {
-        logger.info(`Skipping insight generation for user ${userId} — report already generated recently`);
+        logger.info(`Skipping insight generation for user ${userId} — already have this week's report`);
         return;
       }
 
-      const thirtyDaysAgo = new Date();
+      const thirtyDaysAgo = new Date(now);
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const now = new Date();
 
       const [transactions, budgets, goals] = await Promise.all([
         this.transactionRepository.findForSummary(userId, thirtyDaysAgo, now),
@@ -213,6 +225,9 @@ Return JSON only.`,
             summary: report.goal_alignment?.summary ?? '',
           },
         },
+        periodType: 'weekly',
+        periodStart: weekStart,
+        periodEnd: weekEnd,
         expiresAt: expiry,
       });
 
