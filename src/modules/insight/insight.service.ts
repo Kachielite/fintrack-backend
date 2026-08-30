@@ -21,6 +21,7 @@ export interface IInsightService {
   markRead(id: number, userId: number): Promise<IInsight>;
   generateWeeklyReportForUser(userId: number): Promise<void>;
   generateMonthlyReportForUser(userId: number): Promise<void>;
+  canGenerateWeeklyReport(userId: number): Promise<boolean>;
 }
 
 interface ChartPoint {
@@ -66,6 +67,10 @@ function monthsBetween(from: Date, to: Date): number {
 @injectable()
 class InsightService implements IInsightService {
   private openai: OpenAI;
+  // Guards against a second weekly generation slipping in while the first is
+  // still running — hasReportForPeriod alone can't catch that, since the row
+  // it checks for doesn't exist until generation finishes.
+  private weeklyGenerationInProgress = new Set<number>();
 
   constructor(
     @inject('IInsightRepository') private insightRepository: IInsightRepository,
@@ -133,7 +138,15 @@ class InsightService implements IInsightService {
     return { totalSpend, top_categories, top_merchants };
   }
 
+  async canGenerateWeeklyReport(userId: number): Promise<boolean> {
+    if (this.weeklyGenerationInProgress.has(userId)) return false;
+    const { start } = getCurrentWeekBounds(new Date());
+    const alreadyGenerated = await this.insightRepository.hasReportForPeriod(userId, 'weekly', start);
+    return !alreadyGenerated;
+  }
+
   async generateWeeklyReportForUser(userId: number): Promise<void> {
+    this.weeklyGenerationInProgress.add(userId);
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) return;
@@ -278,6 +291,8 @@ Return JSON only.`,
       }).catch(() => {});
     } catch (error) {
       logger.error(`Error generating weekly insight report for user ${userId} - ${error}`);
+    } finally {
+      this.weeklyGenerationInProgress.delete(userId);
     }
   }
 
