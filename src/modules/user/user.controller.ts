@@ -80,6 +80,15 @@ class UserController extends BaseController {
    *               advisor_tone:
    *                 type: string
    *                 example: motivational
+   *               goal_type:
+   *                 type: string
+   *                 example: save
+   *               income_range:
+   *                 type: string
+   *                 example: 500k-1m
+   *               pay_frequency:
+   *                 type: string
+   *                 example: monthly
    *     responses:
    *       '200':
    *         description: Updated user profile

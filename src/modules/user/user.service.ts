@@ -42,6 +42,9 @@ class UserService implements IUserService {
       if (data.last_name !== undefined) updateData.lastName = data.last_name;
       if (data.ref_currency) updateData.refCurrency = data.ref_currency;
       if (data.advisor_tone) updateData.advisorTone = data.advisor_tone;
+      if (data.goal_type) updateData.goalType = data.goal_type;
+      if (data.income_range) updateData.incomeRange = data.income_range;
+      if (data.pay_frequency) updateData.payFrequency = data.pay_frequency;
 
       const updated = await this.userRepository.updateUser(userId, updateData);
       return this.mapToDTO(updated);
