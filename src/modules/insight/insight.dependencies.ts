@@ -17,11 +17,19 @@ export async function registerInsightDependencies(): Promise<void> {
   container.registerSingleton<InsightService>(InsightService);
   container.registerSingleton<InsightController>(InsightController);
 
-  cron.schedule('30 2 * * *', async () => {
+  cron.schedule('30 2 * * 1', async () => {
     const service = container.resolve(InsightService);
     const userRepository = container.resolve<IUserRepository>('IUserRepository');
     const users = await userRepository.findAll();
     await Promise.all(users.map((u) => service.generateWeeklyReportForUser(u.id)));
   });
-  logger.info('InsightGenerationScheduler started (nightly at 2:30 AM).');
+
+  cron.schedule('0 3 1 * *', async () => {
+    const service = container.resolve(InsightService);
+    const userRepository = container.resolve<IUserRepository>('IUserRepository');
+    const users = await userRepository.findAll();
+    await Promise.all(users.map((u) => service.generateMonthlyReportForUser(u.id)));
+  });
+
+  logger.info('InsightGenerationScheduler started (weekly Mondays at 2:30 AM, monthly on the 1st at 3:00 AM).');
 }
