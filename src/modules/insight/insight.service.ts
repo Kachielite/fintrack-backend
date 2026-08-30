@@ -7,7 +7,6 @@ import { IInsight } from './insight.interface';
 import { InsightQueryDTO } from './insight.dto';
 import { InsightTypeEnum } from './insight.enum';
 import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
-import { IBudgetRepository } from '@/modules/budget/budget.repository';
 import { IGoalRepository } from '@/modules/goal/goal.repository';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { IUserRepository } from '@/modules/user/user.repository';
@@ -89,7 +88,6 @@ class InsightService implements IInsightService {
   constructor(
     @inject('IInsightRepository') private insightRepository: IInsightRepository,
     @inject('ITransactionRepository') private transactionRepository: ITransactionRepository,
-    @inject('IBudgetRepository') private budgetRepository: IBudgetRepository,
     @inject('IGoalRepository') private goalRepository: IGoalRepository,
     @inject(ExchangeRateService) private exchangeRateService: IExchangeRateService,
     @inject('IUserRepository') private userRepository: IUserRepository,
@@ -176,20 +174,10 @@ class InsightService implements IInsightService {
       const thirtyDaysAgo = new Date(now);
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-      const [transactions, budgets, goals] = await Promise.all([
+      const [transactions, goals] = await Promise.all([
         this.transactionRepository.findForSummary(userId, thirtyDaysAgo, now),
-        this.budgetRepository.findAllActive(userId),
         this.goalRepository.findAllByUser(userId),
       ]);
-
-      const budgetProgress = await Promise.all(
-        budgets.map(async (b) => {
-          const spent = transactions
-            .filter((t) => t.category === b.category && t.amount < 0)
-            .reduce((acc, t) => acc + Math.abs(t.refAmount), 0);
-          return { category: b.category, limit: b.limitAmount, spent, percentage: (spent / b.limitAmount) * 100 };
-        }),
-      );
 
       const { totalSpend, top_categories, top_merchants } = this.summarizeSpend(transactions);
 
@@ -198,7 +186,6 @@ class InsightService implements IInsightService {
         ref_currency: user.refCurrency,
         goal_type: user.goalType,
         advisor_tone: user.advisorTone,
-        budget_progress: budgetProgress,
         goals: goals.map((g) => ({ name: g.name, type: g.type, target: g.targetAmount, saved: g.savedAmount })),
         top_categories,
         top_merchants,
