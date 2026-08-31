@@ -166,13 +166,19 @@ class TransactionController extends BaseController {
    *                 type: string
    *                 format: binary
    *                 description: The statement file. Supported types — CSV, XLSX, PDF, DOCX. Max 20MB.
+   *     description: >
+   *       Validates and parses the file synchronously (bad/unreadable files are
+   *       rejected here, with a 400), then processes and imports the actual
+   *       transactions in the background. Poll for new transactions or watch
+   *       for an `import_complete` / `import_failed` notification instead of
+   *       expecting a result in this response.
    *     responses:
-   *       '200':
-   *         description: Import result
+   *       '202':
+   *         description: File validated and accepted; import is running in the background
    *         content:
    *           application/json:
    *             schema:
-   *               $ref: '#/components/schemas/ImportResult'
+   *               $ref: '#/components/schemas/ImportQueued'
    *       '400':
    *         $ref: '#/components/responses/BadRequest'
    *       '401':
@@ -180,18 +186,23 @@ class TransactionController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
-  @Post('/import', { middleware: [statementUpload] })
+  @Post('/import', { middleware: [statementUpload], statusCode: 202 })
   async importTransactions(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     const file = (req as Request & { file?: Express.Multer.File }).file;
     if (!file) {
       throw new BadRequestException('No file was uploaded. Attach a file under the "file" field.');
     }
-    return await this.service.importStatementFile(userId, {
+    const prepared = await this.service.prepareStatementImport(userId, {
       buffer: file.buffer,
       mimetype: file.mimetype,
       originalName: file.originalname,
     });
+    await this.service.enqueueStatementImport(userId, prepared);
+    return {
+      status: 'processing',
+      message: "Your statement is being imported — we'll notify you when it's done.",
+    };
   }
 
   /**

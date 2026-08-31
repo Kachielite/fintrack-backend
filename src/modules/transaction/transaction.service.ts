@@ -12,7 +12,7 @@ import { PDFParse } from 'pdf-parse';
 import ExcelJS from 'exceljs';
 import * as mammoth from 'mammoth';
 import { TransactionStatusEnum, TransactionTypeEnum, CategoryEnum } from './transaction.enum';
-import { IParserRuleService, ExtractedStatementTransaction } from '@/modules/parser-rule/parser-rule.service';
+import { IParserRuleService, ExtractedStatementTransaction, CsvColumnMapping } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import { ITransferLinkRepository } from '@/modules/account/transfer-link.repository';
 import { IPagination } from '@/common/types/interface';
@@ -27,6 +27,7 @@ import AccountService, { IAccountService } from '@/modules/account/account.servi
 import TransferDetectionService, { ITransferDetectionService } from '@/modules/account/transfer-detection.service';
 import { ICategoryRepository } from '@/modules/category/category.repository';
 import { IBankRepository } from '@/modules/bank/bank.repository';
+import { getStatementImportQueue } from './statement-import.queue';
 
 export type StatementFormat = 'csv' | 'xlsx' | 'pdf' | 'docx';
 
@@ -35,6 +36,20 @@ export interface StatementFile {
   mimetype: string;
   originalName: string;
 }
+
+export type ImportResult = { imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] };
+
+// Output of the fast, synchronous validate-and-parse phase — small and fully
+// JSON-serializable so it can travel through a BullMQ job payload as-is.
+// Each format gets its own literal discriminant (rather than grouping csv|xlsx
+// and pdf|docx together) so `prepared.format === 'csv' || ... === 'xlsx'`
+// narrows correctly — TS doesn't narrow discriminated unions reliably when a
+// single member's discriminant is itself a multi-value literal union.
+export type PreparedImport =
+  | { format: 'csv'; records: Record<string, string>[]; mapping: CsvColumnMapping }
+  | { format: 'xlsx'; records: Record<string, string>[]; mapping: CsvColumnMapping }
+  | { format: 'pdf'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined }
+  | { format: 'docx'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined };
 
 interface TransactionCandidate {
   merchant: string;
@@ -83,10 +98,18 @@ export interface ITransactionService {
   }>;
   exportTransactionsCsv(userId: number): Promise<string>;
   createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction>;
-  importStatementFile(
-    userId: number,
-    file: StatementFile,
-  ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }>;
+  /**
+   * Fast, synchronous phase: detects the file format, parses it into
+   * structured rows, and validates that it's actually readable/recognizable —
+   * throws BadRequestException for anything wrong with the upload itself.
+   * Does not run per-row categorization/dedup/insertion; call
+   * enqueueStatementImport with the result to do that in the background.
+   */
+  prepareStatementImport(userId: number, file: StatementFile): Promise<PreparedImport>;
+  /** Queues the slow per-row processing (or runs it inline if no queue is configured); never throws. */
+  enqueueStatementImport(userId: number, prepared: PreparedImport): Promise<void>;
+  /** Runs the per-row processing and creates the resulting notification. Called by the queue worker and by the no-Redis fallback. */
+  processAndNotifyImport(userId: number, prepared: PreparedImport): Promise<void>;
 }
 
 @injectable()
@@ -954,57 +977,23 @@ class TransactionService implements ITransactionService {
   }
 
   /**
-   * Imports a bank statement in any of CSV, Excel (.xlsx), PDF, or Word (.docx)
-   * format. CSV/Excel go through the existing AI column-mapping + deterministic
-   * per-row parsing (tabular formats produce clean rows); PDF/Word don't reliably
-   * produce tabular rows, so their text is fed through a dedicated AI extraction
-   * pass instead. Every path funnels through the same dedup/create tail — see
-   * createCandidateIfNew — so no format gets its own bespoke dedup logic.
+   * Fast, synchronous phase of a statement import: detects the file format
+   * and parses it into structured rows (CSV/Excel via AI column-mapping,
+   * PDF/Word via a dedicated AI extraction pass), throwing BadRequestException
+   * for anything actually wrong with the upload — bad format, unreadable
+   * file, no recognizable columns/transactions. Does none of the slow,
+   * per-row work (categorization, dedup, insertion) — that happens later in
+   * processPreparedImport, off the request/response cycle. Splitting it this
+   * way keeps upload-time validation errors synchronous (the frontend can
+   * still show them immediately) while moving only the genuinely slow part
+   * (up to 40 AI category calls) into the background.
    */
-  async importStatementFile(
-    userId: number,
-    file: StatementFile,
-  ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }> {
+  async prepareStatementImport(userId: number, file: StatementFile): Promise<PreparedImport> {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
 
       const format = this.detectStatementFormat(file.mimetype, file.originalName);
-
-      const allCategories = await this.categoryRepository.findAll();
-      const categorySlugs = allCategories.map((c) => c.slug);
-      const categoryCache = new Map<string, string>();
-      let aiCategoryCalls = 0;
-      const AI_CATEGORY_CALL_CAP = 40;
-
-      const resolveRowCategory = async (merchant: string): Promise<string> => {
-        const key = merchant.toLowerCase();
-        const cached = categoryCache.get(key);
-        if (cached) return cached;
-
-        const learned = await this.transactionRepository.findLearnedCategoryForMerchant(userId, merchant);
-        if (learned) {
-          categoryCache.set(key, learned);
-          return learned;
-        }
-
-        if (aiCategoryCalls < AI_CATEGORY_CALL_CAP) {
-          aiCategoryCalls++;
-          const inferred = await this.parserRuleService.inferCategoryFromText(merchant, merchant, categorySlugs);
-          if (inferred) {
-            categoryCache.set(key, inferred);
-            return inferred;
-          }
-        }
-
-        categoryCache.set(key, CategoryEnum.UNCATEGORIZED);
-        return CategoryEnum.UNCATEGORIZED;
-      };
-
-      let imported = 0;
-      let skippedDuplicates = 0;
-      let skippedInvalid = 0;
-      const errors: string[] = [];
 
       if (format === 'csv' || format === 'xlsx') {
         let records: Record<string, string>[];
@@ -1034,144 +1023,248 @@ class TransactionService implements ITransactionService {
           );
         }
 
-        for (let i = 0; i < records.length; i++) {
-          const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
-          const row = records[i];
-          try {
-            const merchant = row[mapping.merchantColumn]?.trim();
-            const dateRaw = row[mapping.dateColumn]?.trim();
-            if (!merchant || !dateRaw) {
-              skippedInvalid++;
-              errors.push(`Row ${rowNumber}: missing description or date`);
-              continue;
-            }
+        return { format, records, mapping };
+      }
 
-            const transactionDate = this.parseCsvDate(dateRaw, mapping.dateFormat);
-            if (!transactionDate) {
-              skippedInvalid++;
-              errors.push(`Row ${rowNumber}: could not parse date "${dateRaw}"`);
-              continue;
-            }
+      const text = format === 'pdf' ? await this.extractPdfText(file.buffer) : await this.extractDocxText(file.buffer);
+      const bankId = await this.detectBankIdFromText(text);
 
-            let amountAbs: number;
-            let transactionType: TransactionTypeEnum;
-            if (mapping.amountMode === 'debit_credit_split') {
-              const debitRaw = mapping.debitColumn ? row[mapping.debitColumn]?.trim() : '';
-              const creditRaw = mapping.creditColumn ? row[mapping.creditColumn]?.trim() : '';
-              const debitVal = debitRaw ? Math.abs(parseFloat(debitRaw.replace(/,/g, ''))) : 0;
-              const creditVal = creditRaw ? Math.abs(parseFloat(creditRaw.replace(/,/g, ''))) : 0;
-              if (debitVal > 0) {
-                amountAbs = debitVal;
-                transactionType = TransactionTypeEnum.DEBIT;
-              } else if (creditVal > 0) {
-                amountAbs = creditVal;
-                transactionType = TransactionTypeEnum.CREDIT;
-              } else {
-                skippedInvalid++;
-                errors.push(`Row ${rowNumber}: no debit or credit amount`);
-                continue;
-              }
-            } else {
-              const amountRaw = mapping.amountColumn ? row[mapping.amountColumn]?.trim() : '';
-              const parsed = amountRaw ? parseFloat(amountRaw.replace(/,/g, '')) : NaN;
-              if (!isFinite(parsed) || parsed === 0) {
-                skippedInvalid++;
-                errors.push(`Row ${rowNumber}: missing or invalid amount`);
-                continue;
-              }
-              amountAbs = Math.abs(parsed);
-              if (mapping.amountMode === 'single_unsigned_with_type' && mapping.typeColumn) {
-                const typeRaw = (row[mapping.typeColumn] || '').trim().toLowerCase();
-                transactionType = /credit|deposit|\bcr\b/.test(typeRaw)
-                  ? TransactionTypeEnum.CREDIT
-                  : TransactionTypeEnum.DEBIT;
-              } else {
-                transactionType = parsed < 0 ? TransactionTypeEnum.DEBIT : TransactionTypeEnum.CREDIT;
-              }
-            }
+      const extracted: ExtractedStatementTransaction[] | null =
+        await this.parserRuleService.extractTransactionsFromDocument(text, user.refCurrency);
+      if (extracted === null) {
+        throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
+      }
+      if (extracted.length === 0) {
+        throw new BadRequestException(
+          "Couldn't find any transactions in this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
+        );
+      }
 
-            const currency =
-              (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
-              mapping.defaultCurrency ||
-              user.refCurrency;
-            const reference =
-              (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
-            const balanceRaw = mapping.balanceColumn ? row[mapping.balanceColumn]?.trim() : '';
-            const balance = balanceRaw ? parseFloat(balanceRaw.replace(/,/g, '')) : undefined;
+      return { format, extracted, bankId };
+    } catch (error) {
+      if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
+      logger.error(`Error preparing statement import for user ${userId} - ${error}`);
+      throw new InternalServerException('Failed to read the uploaded statement');
+    }
+  }
 
-            const result = await this.createCandidateIfNew(
-              userId,
-              user,
-              undefined, // bankId unknown for tabular formats — unchanged from prior CSV behavior
-              { merchant, transactionDate, amountAbs, transactionType, currency, reference, balance },
-              resolveRowCategory,
-            );
-            if (result === 'duplicate') skippedDuplicates++;
-            else imported++;
-          } catch (rowError) {
-            skippedInvalid++;
-            errors.push(`Row ${rowNumber}: ${rowError}`);
-          }
-        }
-      } else {
-        const text = format === 'pdf' ? await this.extractPdfText(file.buffer) : await this.extractDocxText(file.buffer);
-        const bankId = await this.detectBankIdFromText(text);
+  /**
+   * Slow phase: turns a PreparedImport's structured rows into real
+   * transactions — category resolution (up to 40 AI calls), dedup, and
+   * creation, via the same createCandidateIfNew tail every import format
+   * funnels through. Only ever called from processAndNotifyImport (worker or
+   * no-Redis fallback), never directly from a request handler.
+   */
+  private async processPreparedImport(userId: number, prepared: PreparedImport): Promise<ImportResult> {
+    const user = await this.userRepository.findById(userId);
+    if (!user) throw new ResourceNotFoundException('User not found');
 
-        const extracted: ExtractedStatementTransaction[] | null =
-          await this.parserRuleService.extractTransactionsFromDocument(text, user.refCurrency);
-        if (extracted === null) {
-          throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
-        }
-        if (extracted.length === 0) {
-          throw new BadRequestException(
-            "Couldn't find any transactions in this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
-          );
-        }
+    const allCategories = await this.categoryRepository.findAll();
+    const categorySlugs = allCategories.map((c) => c.slug);
+    const categoryCache = new Map<string, string>();
+    let aiCategoryCalls = 0;
+    const AI_CATEGORY_CALL_CAP = 40;
 
-        for (let i = 0; i < extracted.length; i++) {
-          const itemNumber = i + 1;
-          const item = extracted[i];
-          try {
-            const transactionDate = new Date(item.date);
-            if (isNaN(transactionDate.getTime())) {
-              skippedInvalid++;
-              errors.push(`Item ${itemNumber}: could not parse date "${item.date}"`);
-              continue;
-            }
+    const resolveRowCategory = async (merchant: string): Promise<string> => {
+      const key = merchant.toLowerCase();
+      const cached = categoryCache.get(key);
+      if (cached) return cached;
 
-            const result = await this.createCandidateIfNew(
-              userId,
-              user,
-              bankId,
-              {
-                merchant: item.merchant,
-                transactionDate,
-                amountAbs: item.amount,
-                transactionType:
-                  item.transactionType === 'credit' ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT,
-                currency: item.currency || user.refCurrency,
-                reference: item.reference ?? undefined,
-                balance: item.balance ?? undefined,
-              },
-              resolveRowCategory,
-            );
-            if (result === 'duplicate') skippedDuplicates++;
-            else imported++;
-          } catch (itemError) {
-            skippedInvalid++;
-            errors.push(`Item ${itemNumber}: ${itemError}`);
-          }
+      const learned = await this.transactionRepository.findLearnedCategoryForMerchant(userId, merchant);
+      if (learned) {
+        categoryCache.set(key, learned);
+        return learned;
+      }
+
+      if (aiCategoryCalls < AI_CATEGORY_CALL_CAP) {
+        aiCategoryCalls++;
+        const inferred = await this.parserRuleService.inferCategoryFromText(merchant, merchant, categorySlugs);
+        if (inferred) {
+          categoryCache.set(key, inferred);
+          return inferred;
         }
       }
 
-      logger.info(
-        `[Transaction] Statement import (${format}) for user ${userId}: imported=${imported}, duplicates=${skippedDuplicates}, invalid=${skippedInvalid}`,
+      categoryCache.set(key, CategoryEnum.UNCATEGORIZED);
+      return CategoryEnum.UNCATEGORIZED;
+    };
+
+    let imported = 0;
+    let skippedDuplicates = 0;
+    let skippedInvalid = 0;
+    const errors: string[] = [];
+
+    if (prepared.format === 'csv' || prepared.format === 'xlsx') {
+      const { records, mapping } = prepared;
+      for (let i = 0; i < records.length; i++) {
+        const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
+        const row = records[i];
+        try {
+          const merchant = row[mapping.merchantColumn]?.trim();
+          const dateRaw = row[mapping.dateColumn]?.trim();
+          if (!merchant || !dateRaw) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: missing description or date`);
+            continue;
+          }
+
+          const transactionDate = this.parseCsvDate(dateRaw, mapping.dateFormat);
+          if (!transactionDate) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: could not parse date "${dateRaw}"`);
+            continue;
+          }
+
+          let amountAbs: number;
+          let transactionType: TransactionTypeEnum;
+          if (mapping.amountMode === 'debit_credit_split') {
+            const debitRaw = mapping.debitColumn ? row[mapping.debitColumn]?.trim() : '';
+            const creditRaw = mapping.creditColumn ? row[mapping.creditColumn]?.trim() : '';
+            const debitVal = debitRaw ? Math.abs(parseFloat(debitRaw.replace(/,/g, ''))) : 0;
+            const creditVal = creditRaw ? Math.abs(parseFloat(creditRaw.replace(/,/g, ''))) : 0;
+            if (debitVal > 0) {
+              amountAbs = debitVal;
+              transactionType = TransactionTypeEnum.DEBIT;
+            } else if (creditVal > 0) {
+              amountAbs = creditVal;
+              transactionType = TransactionTypeEnum.CREDIT;
+            } else {
+              skippedInvalid++;
+              errors.push(`Row ${rowNumber}: no debit or credit amount`);
+              continue;
+            }
+          } else {
+            const amountRaw = mapping.amountColumn ? row[mapping.amountColumn]?.trim() : '';
+            const parsed = amountRaw ? parseFloat(amountRaw.replace(/,/g, '')) : NaN;
+            if (!isFinite(parsed) || parsed === 0) {
+              skippedInvalid++;
+              errors.push(`Row ${rowNumber}: missing or invalid amount`);
+              continue;
+            }
+            amountAbs = Math.abs(parsed);
+            if (mapping.amountMode === 'single_unsigned_with_type' && mapping.typeColumn) {
+              const typeRaw = (row[mapping.typeColumn] || '').trim().toLowerCase();
+              transactionType = /credit|deposit|\bcr\b/.test(typeRaw)
+                ? TransactionTypeEnum.CREDIT
+                : TransactionTypeEnum.DEBIT;
+            } else {
+              transactionType = parsed < 0 ? TransactionTypeEnum.DEBIT : TransactionTypeEnum.CREDIT;
+            }
+          }
+
+          const currency =
+            (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
+            mapping.defaultCurrency ||
+            user.refCurrency;
+          const reference =
+            (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
+          const balanceRaw = mapping.balanceColumn ? row[mapping.balanceColumn]?.trim() : '';
+          const balance = balanceRaw ? parseFloat(balanceRaw.replace(/,/g, '')) : undefined;
+
+          const result = await this.createCandidateIfNew(
+            userId,
+            user,
+            undefined, // bankId unknown for tabular formats — unchanged from prior CSV behavior
+            { merchant, transactionDate, amountAbs, transactionType, currency, reference, balance },
+            resolveRowCategory,
+          );
+          if (result === 'duplicate') skippedDuplicates++;
+          else imported++;
+        } catch (rowError) {
+          skippedInvalid++;
+          errors.push(`Row ${rowNumber}: ${rowError}`);
+        }
+      }
+    } else {
+      const { extracted, bankId } = prepared;
+      for (let i = 0; i < extracted.length; i++) {
+        const itemNumber = i + 1;
+        const item = extracted[i];
+        try {
+          const transactionDate = new Date(item.date);
+          if (isNaN(transactionDate.getTime())) {
+            skippedInvalid++;
+            errors.push(`Item ${itemNumber}: could not parse date "${item.date}"`);
+            continue;
+          }
+
+          const result = await this.createCandidateIfNew(
+            userId,
+            user,
+            bankId,
+            {
+              merchant: item.merchant,
+              transactionDate,
+              amountAbs: item.amount,
+              transactionType:
+                item.transactionType === 'credit' ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT,
+              currency: item.currency || user.refCurrency,
+              reference: item.reference ?? undefined,
+              balance: item.balance ?? undefined,
+            },
+            resolveRowCategory,
+          );
+          if (result === 'duplicate') skippedDuplicates++;
+          else imported++;
+        } catch (itemError) {
+          skippedInvalid++;
+          errors.push(`Item ${itemNumber}: ${itemError}`);
+        }
+      }
+    }
+
+    logger.info(
+      `[Transaction] Statement import (${prepared.format}) for user ${userId}: imported=${imported}, duplicates=${skippedDuplicates}, invalid=${skippedInvalid}`,
+    );
+    return { imported, skippedDuplicates, skippedInvalid, errors: errors.slice(0, 20) };
+  }
+
+  /**
+   * Queues the slow phase (or runs it inline, fire-and-forget, when no
+   * REDIS_URL is configured — mirrors ingestion's enqueuePoll fallback
+   * exactly). Never throws: prepareStatementImport already validated the
+   * file synchronously, so anything going wrong from here on is reported via
+   * notification, not the HTTP response.
+   */
+  async enqueueStatementImport(userId: number, prepared: PreparedImport): Promise<void> {
+    const queue = getStatementImportQueue();
+    if (queue) {
+      await queue.add('import', { userId, prepared });
+    } else {
+      // No Redis — fire and forget directly, matching the ingestion module's fallback.
+      this.processAndNotifyImport(userId, prepared).catch((err) =>
+        logger.error(`[Transaction] Direct import failed for user ${userId} - ${err}`),
       );
-      return { imported, skippedDuplicates, skippedInvalid, errors: errors.slice(0, 20) };
+    }
+  }
+
+  async processAndNotifyImport(userId: number, prepared: PreparedImport): Promise<void> {
+    try {
+      const result = await this.processPreparedImport(userId, prepared);
+      const hasImported = result.imported > 0;
+      await this.notificationService.create({
+        userId,
+        type: 'import_complete',
+        title: hasImported ? 'Import complete' : 'Import complete — nothing new',
+        body: hasImported
+          ? `${result.imported} transaction${result.imported === 1 ? '' : 's'} imported` +
+            (result.skippedDuplicates > 0 ? `, ${result.skippedDuplicates} duplicate${result.skippedDuplicates === 1 ? '' : 's'} skipped` : '')
+          : 'No new transactions were found in that statement.',
+        data: { ...result },
+      });
     } catch (error) {
-      if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
-      logger.error(`Error importing statement file for user ${userId} - ${error}`);
-      throw new InternalServerException('Failed to import transactions');
+      logger.error(`[Transaction] Background import failed for user ${userId} - ${error}`);
+      try {
+        await this.notificationService.create({
+          userId,
+          type: 'import_failed',
+          title: 'Import failed',
+          body: 'Something went wrong while importing your statement. Please try again.',
+          data: {},
+        });
+      } catch (notifyError) {
+        logger.error(`[Transaction] Failed to send import-failed notification for user ${userId} - ${notifyError}`);
+      }
     }
   }
 

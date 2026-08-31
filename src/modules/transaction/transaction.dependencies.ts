@@ -4,6 +4,7 @@ import TransactionController from './transaction.controller';
 import TransactionService from './transaction.service';
 import TransactionRepositoryImpl from './transaction.repository';
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
+import { startStatementImportWorker } from './statement-import.queue';
 
 export async function registerTransactionDependencies(): Promise<void> {
   container.register<express.Router>(ROUTER_TOKENS.TRANSACTION, {
@@ -14,4 +15,5 @@ export async function registerTransactionDependencies(): Promise<void> {
   container.registerSingleton<TransactionService>(TransactionService);
   container.registerSingleton<TransactionController>(TransactionController);
 
+  startStatementImportWorker();
 }
