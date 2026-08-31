@@ -60,6 +60,7 @@ class AuthService implements IAuthService {
         email: payload.email,
         firstName: payload.given_name || payload.name || 'User',
         lastName: payload.family_name,
+        termsAccepted: data.terms_accepted,
       });
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
@@ -79,6 +80,7 @@ class AuthService implements IAuthService {
         email: decoded.email,
         firstName: data.first_name || 'User',
         lastName: data.last_name,
+        termsAccepted: data.terms_accepted,
       });
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
@@ -122,6 +124,9 @@ class AuthService implements IAuthService {
         firstName: data.first_name,
         lastName: data.last_name,
         passwordHash,
+        // Only reachable because RegisterSchema already rejected anything
+        // other than `terms_accepted: true`.
+        termsAcceptedAt: new Date(),
       });
       await this.authRepository.createAuthProvider({
         userId: user.id,
@@ -205,6 +210,7 @@ class AuthService implements IAuthService {
     email: string;
     firstName: string;
     lastName?: string;
+    termsAccepted?: boolean;
   }): Promise<AuthResponseDTO> {
     const existing = await this.authRepository.findAuthProvider({
       provider: params.provider,
@@ -218,10 +224,20 @@ class AuthService implements IAuthService {
     } else {
       let existingUser = await this.userRepository.findByEmail(params.email);
       if (!existingUser) {
+        // A brand-new account created via OAuth bypasses RegisterSchema
+        // entirely, so consent has to be enforced here too — the same
+        // requirement as password-based registration, just checked
+        // server-side instead of by the schema.
+        if (!params.termsAccepted) {
+          throw new BadRequestException(
+            'You must accept the terms and privacy policy to create an account',
+          );
+        }
         existingUser = await this.userRepository.createUser({
           email: params.email,
           firstName: params.firstName,
           lastName: params.lastName,
+          termsAcceptedAt: new Date(),
         });
       }
       await this.authRepository.createAuthProvider({

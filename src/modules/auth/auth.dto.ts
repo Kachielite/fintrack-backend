@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 export const GoogleAuthSchema = z.object({
   id_token: z.string().min(1),
+  // Only enforced when this sign-in creates a brand-new account (see
+  // AuthService.upsertUserAndIssueTokens) — a returning user has already
+  // consented, so this stays optional at the schema level.
+  terms_accepted: z.boolean().optional(),
 });
 export type GoogleAuthDTO = z.infer<typeof GoogleAuthSchema>;
 
@@ -9,6 +13,7 @@ export const AppleAuthSchema = z.object({
   id_token: z.string().min(1),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
+  terms_accepted: z.boolean().optional(),
 });
 export type AppleAuthDTO = z.infer<typeof AppleAuthSchema>;
 
@@ -28,6 +33,9 @@ export const RegisterSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
   first_name: z.string().min(1, 'First name is required'),
   last_name: z.string().optional(),
+  terms_accepted: z.literal(true, {
+    message: 'You must accept the terms and privacy policy to create an account',
+  }),
 });
 export type RegisterDTO = z.infer<typeof RegisterSchema>;
 
