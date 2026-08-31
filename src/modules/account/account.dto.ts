@@ -15,6 +15,13 @@ export const AccountResponseSchema = z.object({
 });
 export type AccountResponseDTO = z.infer<typeof AccountResponseSchema>;
 
+export const CreateAccountSchema = z.object({
+  currency: z.string().length(3),
+  bank_id: z.number().int().positive().optional(),
+  label: z.string().min(1).max(100).optional(),
+});
+export type CreateAccountDTO = z.infer<typeof CreateAccountSchema>;
+
 export const PatchAccountSchema = z
   .object({
     label: z.string().min(1).max(100).optional(),

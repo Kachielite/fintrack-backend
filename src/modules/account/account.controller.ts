@@ -4,7 +4,7 @@ import { BaseController, Controller, Get, Patch, Post } from '@/common/decorator
 import { ROUTER_TOKENS } from '@/common/constants/router.tokens';
 import AccountService, { IAccountService } from './account.service';
 import TransferDetectionService, { ITransferDetectionService } from './transfer-detection.service';
-import { PatchAccountDTO, PatchAccountSchema } from './account.dto';
+import { CreateAccountDTO, CreateAccountSchema, PatchAccountDTO, PatchAccountSchema } from './account.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
 
 @injectable()
@@ -44,6 +44,59 @@ class AccountController extends BaseController {
   async listAccounts(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
     return await this.accountService.listAccounts(userId);
+  }
+
+  /**
+   * @swagger
+   * /accounts:
+   *   post:
+   *     tags: [Accounts]
+   *     summary: Create a new account
+   *     description: >
+   *       Dedupes by (bank_id, currency) — if a matching account already exists
+   *       (including a deactivated one, which gets reactivated) it's returned
+   *       as-is rather than creating a duplicate; label is only applied when a
+   *       new account is actually created, never used to rename an existing
+   *       match. Also used internally by statement import to create an
+   *       account inline when the user picks "create new" instead of an
+   *       existing account.
+   *     security:
+   *       - bearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [currency]
+   *             properties:
+   *               currency:
+   *                 type: string
+   *                 example: KES
+   *               bank_id:
+   *                 type: integer
+   *                 example: 3
+   *               label:
+   *                 type: string
+   *                 example: M-Pesa
+   *     responses:
+   *       '201':
+   *         description: Created (or matched an existing) account
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/Account'
+   *       '400':
+   *         $ref: '#/components/responses/BadRequest'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/', { validate: CreateAccountSchema, statusCode: 201 })
+  async createAccount(req: Request) {
+    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+    return await this.accountService.createAccount(userId, req.body as CreateAccountDTO);
   }
 
   /**
