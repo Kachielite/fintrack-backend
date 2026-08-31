@@ -1,7 +1,7 @@
 import { inject, injectable } from 'tsyringe';
 import { IAccountRepository } from './account.repository';
 import { IAccount } from './account.interface';
-import { AccountResponseDTO, PatchAccountDTO } from './account.dto';
+import { AccountResponseDTO, CreateAccountDTO, PatchAccountDTO } from './account.dto';
 import { IBankRepository } from '@/modules/bank/bank.repository';
 import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
 import { BadRequestException, InternalServerException, ResourceNotFoundException } from '@/common/exception';
@@ -13,7 +13,15 @@ export interface IAccountService {
    * only driven by ingestion observing a (bank, currency) pair; also used by
    * manual transaction entry when the user doesn't pick an existing account.
    */
-  resolveOrCreate(userId: number, bankId: number | null, currency: string, mask?: string | null): Promise<IAccount>;
+  resolveOrCreate(
+    userId: number,
+    bankId: number | null,
+    currency: string,
+    mask?: string | null,
+    label?: string,
+  ): Promise<IAccount>;
+  /** User-initiated account creation (Accounts screen, or the statement-import account picker) — thin wrapper over resolveOrCreate that returns the API-shaped DTO. */
+  createAccount(userId: number, data: CreateAccountDTO): Promise<AccountResponseDTO>;
   listAccounts(userId: number): Promise<AccountResponseDTO[]>;
   updateAccount(userId: number, id: number, data: PatchAccountDTO): Promise<AccountResponseDTO>;
   /** Raw account lookup scoped to the owning user — null if it doesn't exist or belongs to someone else. */
@@ -34,9 +42,15 @@ class AccountService implements IAccountService {
     @inject('ITransactionRepository') private transactionRepository: ITransactionRepository,
   ) {}
 
-  async resolveOrCreate(userId: number, bankId: number | null, currency: string, mask?: string | null): Promise<IAccount> {
+  async resolveOrCreate(
+    userId: number,
+    bankId: number | null,
+    currency: string,
+    mask?: string | null,
+    label?: string,
+  ): Promise<IAccount> {
     try {
-      const existing = await this.accountRepository.findMatch(userId, bankId, currency);
+      const existing = await this.accountRepository.findMatch(userId, bankId, currency, mask);
       if (existing) {
         let account = existing;
         // A matching bank/currency account that was deactivated (e.g. emptied out by
@@ -46,20 +60,19 @@ class AccountService implements IAccountService {
           logger.info(`[Account] Reactivating account ${account.id} for user ${userId} on new matching data`);
           account = await this.accountRepository.update(account.id, userId, { isActive: true });
         }
-        // Backfill the mask once we see it, even if the account was first created without one.
-        if (mask && !account.accountNumberMask) {
-          account = await this.accountRepository.setMask(account.id, mask);
-        }
+        // Deliberately not renaming on reuse — a caller passing a custom label
+        // (e.g. a user explicitly creating an account) shouldn't silently
+        // rename an existing account it happened to match by (bankId, currency).
         return account;
       }
 
-      const label = await this.buildDefaultLabel(bankId, currency);
-      logger.info(`[Account] Creating account for user ${userId}: ${label}`);
+      const resolvedLabel = label ?? (await this.buildDefaultLabel(bankId, currency));
+      logger.info(`[Account] Creating account for user ${userId}: ${resolvedLabel}`);
       return await this.accountRepository.create({
         userId,
         bankId,
         currency,
-        label,
+        label: resolvedLabel,
         accountNumberMask: mask ?? null,
       });
     } catch (error) {
@@ -70,6 +83,17 @@ class AccountService implements IAccountService {
 
   async findOwnedAccount(userId: number, accountId: number): Promise<IAccount | null> {
     return await this.accountRepository.findById(accountId, userId);
+  }
+
+  async createAccount(userId: number, data: CreateAccountDTO): Promise<AccountResponseDTO> {
+    const account = await this.resolveOrCreate(
+      userId,
+      data.bank_id ?? null,
+      data.currency,
+      data.account_number ?? null,
+      data.label,
+    );
+    return await this.mapToDTO(account);
   }
 
   async listAccounts(userId: number): Promise<AccountResponseDTO[]> {
@@ -100,9 +124,11 @@ class AccountService implements IAccountService {
         return await this.mapToDTO(merged);
       }
 
-      const updateData: { label?: string; isActive?: boolean } = {};
+      const updateData: { label?: string; isActive?: boolean; bankId?: number; accountNumberMask?: string } = {};
       if (data.label !== undefined) updateData.label = data.label;
       if (data.is_active !== undefined) updateData.isActive = data.is_active;
+      if (data.bank_id !== undefined) updateData.bankId = data.bank_id;
+      if (data.account_number !== undefined) updateData.accountNumberMask = data.account_number;
 
       const updated = await this.accountRepository.update(id, userId, updateData);
       return await this.mapToDTO(updated);

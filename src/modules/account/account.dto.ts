@@ -15,11 +15,26 @@ export const AccountResponseSchema = z.object({
 });
 export type AccountResponseDTO = z.infer<typeof AccountResponseSchema>;
 
+export const CreateAccountSchema = z.object({
+  currency: z.string().length(3),
+  bank_id: z.number().int().positive().optional(),
+  label: z.string().min(1).max(100).optional(),
+  // Distinguishes two accounts at the same bank in the same currency (e.g.
+  // checking + savings), without it they'd dedupe into a single account.
+  account_number: z.string().min(1).max(50).optional(),
+});
+export type CreateAccountDTO = z.infer<typeof CreateAccountSchema>;
+
 export const PatchAccountSchema = z
   .object({
     label: z.string().min(1).max(100).optional(),
     is_active: z.boolean().optional(),
     merge_into_account_id: z.number().int().positive().optional(),
+    // Lets a user fill in details an auto-created account never had (e.g.
+    // accounts created by email ingestion before the bank/account-number
+    // fields existed here) or correct a wrong bank match.
+    bank_id: z.number().int().positive().optional(),
+    account_number: z.string().min(1).max(50).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field must be provided' });
 export type PatchAccountDTO = z.infer<typeof PatchAccountSchema>;

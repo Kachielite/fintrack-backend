@@ -39,17 +39,39 @@ export interface StatementFile {
 
 export type ImportResult = { imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] };
 
+/**
+ * Optionally supplied by the caller to pin the import to a specific account
+ * instead of letting each row resolve/create its own via user.refCurrency.
+ * Exactly one of accountId or currency should be set (validated in the
+ * controller) — accountId targets an existing account, currency (+ optional
+ * bankId) creates/reuses one via AccountService.resolveOrCreate.
+ */
+export interface ImportTarget {
+  accountId?: number;
+  currency?: string;
+  bankId?: number;
+  label?: string;
+  accountNumber?: string;
+}
+
 // Output of the fast, synchronous validate-and-parse phase — small and fully
 // JSON-serializable so it can travel through a BullMQ job payload as-is.
 // Each format gets its own literal discriminant (rather than grouping csv|xlsx
 // and pdf|docx together) so `prepared.format === 'csv' || ... === 'xlsx'`
 // narrows correctly — TS doesn't narrow discriminated unions reliably when a
 // single member's discriminant is itself a multi-value literal union.
+//
+// defaultCurrency/defaultBankId come from resolving an ImportTarget (if any)
+// once up front — feeding them into the per-row fallback in
+// processPreparedImport lets AccountService.resolveOrCreate's existing
+// (userId, bankId, currency) dedupe converge back onto that same target
+// account for every currency-less row, without threading accountId through
+// each row by hand.
 export type PreparedImport =
-  | { format: 'csv'; records: Record<string, string>[]; mapping: CsvColumnMapping }
-  | { format: 'xlsx'; records: Record<string, string>[]; mapping: CsvColumnMapping }
-  | { format: 'pdf'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined }
-  | { format: 'docx'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined };
+  | { format: 'csv'; records: Record<string, string>[]; mapping: CsvColumnMapping; defaultCurrency?: string; defaultBankId?: number | null }
+  | { format: 'xlsx'; records: Record<string, string>[]; mapping: CsvColumnMapping; defaultCurrency?: string; defaultBankId?: number | null }
+  | { format: 'pdf'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null }
+  | { format: 'docx'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null };
 
 interface TransactionCandidate {
   merchant: string;
@@ -104,8 +126,10 @@ export interface ITransactionService {
    * throws BadRequestException for anything wrong with the upload itself.
    * Does not run per-row categorization/dedup/insertion; call
    * enqueueStatementImport with the result to do that in the background.
+   * An optional ImportTarget pins the import to a specific account (existing
+   * or newly created) instead of falling back to user.refCurrency.
    */
-  prepareStatementImport(userId: number, file: StatementFile): Promise<PreparedImport>;
+  prepareStatementImport(userId: number, file: StatementFile, target?: ImportTarget): Promise<PreparedImport>;
   /** Queues the slow per-row processing (or runs it inline if no queue is configured); never throws. */
   enqueueStatementImport(userId: number, prepared: PreparedImport): Promise<void>;
   /** Runs the per-row processing and creates the resulting notification. Called by the queue worker and by the no-Redis fallback. */
@@ -988,12 +1012,34 @@ class TransactionService implements ITransactionService {
    * still show them immediately) while moving only the genuinely slow part
    * (up to 40 AI category calls) into the background.
    */
-  async prepareStatementImport(userId: number, file: StatementFile): Promise<PreparedImport> {
+  async prepareStatementImport(userId: number, file: StatementFile, target?: ImportTarget): Promise<PreparedImport> {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
 
       const format = this.detectStatementFormat(file.mimetype, file.originalName);
+
+      // Resolve the caller's chosen target account (if any) once, up front —
+      // synchronously, since a bad account_id or an account-creation failure
+      // is a real validation error, not something to fail on in the background.
+      let defaultCurrency: string | undefined;
+      let defaultBankId: number | null | undefined;
+      if (target?.accountId !== undefined) {
+        const account = await this.accountService.findOwnedAccount(userId, target.accountId);
+        if (!account) throw new ResourceNotFoundException('Account not found');
+        defaultCurrency = account.currency;
+        defaultBankId = account.bankId;
+      } else if (target?.currency) {
+        const account = await this.accountService.resolveOrCreate(
+          userId,
+          target.bankId ?? null,
+          target.currency,
+          target.accountNumber ?? null,
+          target.label,
+        );
+        defaultCurrency = account.currency;
+        defaultBankId = account.bankId;
+      }
 
       if (format === 'csv' || format === 'xlsx') {
         let records: Record<string, string>[];
@@ -1023,14 +1069,16 @@ class TransactionService implements ITransactionService {
           );
         }
 
-        return { format, records, mapping };
+        return { format, records, mapping, defaultCurrency, defaultBankId };
       }
 
       const text = format === 'pdf' ? await this.extractPdfText(file.buffer) : await this.extractDocxText(file.buffer);
       const bankId = await this.detectBankIdFromText(text);
 
-      const extracted: ExtractedStatementTransaction[] | null =
-        await this.parserRuleService.extractTransactionsFromDocument(text, user.refCurrency);
+      const extracted: ExtractedStatementTransaction[] | null = await this.parserRuleService.extractTransactionsFromDocument(
+        text,
+        defaultCurrency ?? user.refCurrency,
+      );
       if (extracted === null) {
         throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
       }
@@ -1040,7 +1088,7 @@ class TransactionService implements ITransactionService {
         );
       }
 
-      return { format, extracted, bankId };
+      return { format, extracted, bankId, defaultCurrency, defaultBankId };
     } catch (error) {
       if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error preparing statement import for user ${userId} - ${error}`);
@@ -1095,7 +1143,7 @@ class TransactionService implements ITransactionService {
     const errors: string[] = [];
 
     if (prepared.format === 'csv' || prepared.format === 'xlsx') {
-      const { records, mapping } = prepared;
+      const { records, mapping, defaultCurrency, defaultBankId } = prepared;
       for (let i = 0; i < records.length; i++) {
         const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
         const row = records[i];
@@ -1155,6 +1203,7 @@ class TransactionService implements ITransactionService {
           const currency =
             (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
             mapping.defaultCurrency ||
+            defaultCurrency ||
             user.refCurrency;
           const reference =
             (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
@@ -1164,7 +1213,7 @@ class TransactionService implements ITransactionService {
           const result = await this.createCandidateIfNew(
             userId,
             user,
-            undefined, // bankId unknown for tabular formats — unchanged from prior CSV behavior
+            defaultBankId ?? undefined, // bankId still unknown for tabular formats unless a target account supplied one
             { merchant, transactionDate, amountAbs, transactionType, currency, reference, balance },
             resolveRowCategory,
           );
@@ -1176,7 +1225,7 @@ class TransactionService implements ITransactionService {
         }
       }
     } else {
-      const { extracted, bankId } = prepared;
+      const { extracted, bankId, defaultCurrency, defaultBankId } = prepared;
       for (let i = 0; i < extracted.length; i++) {
         const itemNumber = i + 1;
         const item = extracted[i];
@@ -1191,14 +1240,14 @@ class TransactionService implements ITransactionService {
           const result = await this.createCandidateIfNew(
             userId,
             user,
-            bankId,
+            bankId ?? defaultBankId ?? undefined, // prefer the document-detected bank; fall back to the target account's
             {
               merchant: item.merchant,
               transactionDate,
               amountAbs: item.amount,
               transactionType:
                 item.transactionType === 'credit' ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT,
-              currency: item.currency || user.refCurrency,
+              currency: item.currency || defaultCurrency || user.refCurrency,
               reference: item.reference ?? undefined,
               balance: item.balance ?? undefined,
             },

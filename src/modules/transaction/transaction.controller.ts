@@ -166,6 +166,32 @@ class TransactionController extends BaseController {
    *                 type: string
    *                 format: binary
    *                 description: The statement file. Supported types — CSV, XLSX, PDF, DOCX. Max 20MB.
+   *               account_id:
+   *                 type: string
+   *                 description: >
+   *                   Existing account to import into — its currency is used as
+   *                   the fallback for rows with no detectable currency (instead
+   *                   of the user's reference currency). Mutually exclusive with
+   *                   currency/bank_id.
+   *               currency:
+   *                 type: string
+   *                 description: >
+   *                   Create/reuse an account with this currency to import into
+   *                   (e.g. for a statement with no currency column, like M-Pesa).
+   *                   Mutually exclusive with account_id.
+   *               bank_id:
+   *                 type: string
+   *                 description: Optional bank to associate with a newly created account (only used alongside currency).
+   *               label:
+   *                 type: string
+   *                 description: Optional label for a newly created account (only used alongside currency).
+   *               account_number:
+   *                 type: string
+   *                 description: >
+   *                   Optional account number for a newly created account (only used
+   *                   alongside currency). Distinguishes two accounts at the same bank
+   *                   in the same currency (checking vs. savings); without it they'd
+   *                   dedupe into a single account.
    *     description: >
    *       Validates and parses the file synchronously (bad/unreadable files are
    *       rejected here, with a 400), then processes and imports the actual
@@ -193,11 +219,34 @@ class TransactionController extends BaseController {
     if (!file) {
       throw new BadRequestException('No file was uploaded. Attach a file under the "file" field.');
     }
-    const prepared = await this.service.prepareStatementImport(userId, {
-      buffer: file.buffer,
-      mimetype: file.mimetype,
-      originalName: file.originalname,
-    });
+
+    const body = req.body as {
+      account_id?: string;
+      currency?: string;
+      bank_id?: string;
+      label?: string;
+      account_number?: string;
+    };
+    const accountId = body.account_id ? parseInt(body.account_id, 10) : undefined;
+    const currency = body.currency?.trim() || undefined;
+    const bankId = body.bank_id ? parseInt(body.bank_id, 10) : undefined;
+    const label = body.label?.trim() || undefined;
+    const accountNumber = body.account_number?.trim() || undefined;
+    if (accountId !== undefined && currency !== undefined) {
+      throw new BadRequestException('Provide either account_id or currency, not both.');
+    }
+
+    const prepared = await this.service.prepareStatementImport(
+      userId,
+      {
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+        originalName: file.originalname,
+      },
+      accountId !== undefined || currency !== undefined
+        ? { accountId, currency, bankId, label, accountNumber }
+        : undefined,
+    );
     await this.service.enqueueStatementImport(userId, prepared);
     return {
       status: 'processing',
