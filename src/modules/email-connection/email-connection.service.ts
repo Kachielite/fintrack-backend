@@ -4,6 +4,7 @@ import { CONSTANTS } from '@/common/configuration/constants';
 import { tokenEncryptionService } from '@/common/utils/token-encryption';
 import {
   InternalServerException,
+  PlanLimitException,
   ResourceNotFoundException,
 } from '@/common/exception';
 import logger from '@/common/lib/logger';
@@ -13,6 +14,8 @@ import { IConnectionStats } from '@/modules/ingestion/ingestion.interface';
 import { IBudgetRepository } from '@/modules/budget/budget.repository';
 import { IInsightRepository } from '@/modules/insight/insight.repository';
 import AccountService, { IAccountService } from '@/modules/account/account.service';
+import { IUserRepository } from '@/modules/user/user.repository';
+import { getMaxEmailConnectionsForPlan } from '@/modules/user/user.constants';
 import {
   GmailCallbackDTO,
   EmailConnectionResponseDTO,
@@ -70,6 +73,8 @@ class EmailConnectionService implements IEmailConnectionService {
     private insightRepository: IInsightRepository,
     @inject(AccountService)
     private accountService: IAccountService,
+    @inject('IUserRepository')
+    private userRepository: IUserRepository,
   ) {}
 
   getAuthUrl(userId: number): string {
@@ -101,14 +106,39 @@ class EmailConnectionService implements IEmailConnectionService {
       const profile = await gmail.users.getProfile({ userId: 'me' });
       const gmailAddress = profile.data.emailAddress as string;
 
+      const existing = await this.connectionRepository.findByUserAndEmail(userId, gmailAddress);
+
+      if (!existing) {
+        // A brand-new distinct address: enforce the plan's connection cap here,
+        // before touching the user's real Gmail account (label/filter), since
+        // this is the authoritative gate — the frontend's own pre-check (if
+        // any) may be stale or bypassed, and OAuth has already completed by
+        // this point regardless.
+        const user = await this.userRepository.findById(userId);
+        const maxConnections = getMaxEmailConnectionsForPlan(user?.planTier ?? 'free');
+        if (maxConnections !== null) {
+          const userConnections = await this.connectionRepository.findAllByUser(userId);
+          // Revoked connections don't count against the cap — the user can
+          // reconnect the same address, or connect a different one, once
+          // they've revoked the old one.
+          const nonRevokedCount = userConnections.filter(
+            (c) => c.status !== ConnectionStatusEnum.REVOKED,
+          ).length;
+          if (nonRevokedCount >= maxConnections) {
+            throw new PlanLimitException(
+              `Free plan is limited to ${maxConnections} email connection${maxConnections === 1 ? '' : 's'}. Upgrade to Pro for unlimited connections.`,
+              'PLAN_LIMIT_EMAIL_CONNECTIONS',
+            );
+          }
+        }
+      }
+
       const labelId = await this.findOrCreateLabel(gmail, GMAIL_LABEL_NAME);
       await this.createGmailFilter(gmail, labelId);
 
       const encryptedAccessToken = tokenEncryptionService.encrypt(tokens.access_token);
       const encryptedRefreshToken = tokenEncryptionService.encrypt(tokens.refresh_token);
       const tokenExpiresAt = new Date(tokens.expiry_date || Date.now() + 3600 * 1000);
-
-      const existing = await this.connectionRepository.findByUserAndEmail(userId, gmailAddress);
 
       let connection: IEmailConnection;
       let alreadyConnected = false;
@@ -143,6 +173,7 @@ class EmailConnectionService implements IEmailConnectionService {
 
       return { ...this.mapToDTO(connection), already_connected: alreadyConnected };
     } catch (error) {
+      if (error instanceof PlanLimitException) throw error;
       logger.error(`Gmail callback error for userId ${userId} - ${error}`);
       throw new InternalServerException('Failed to connect Gmail account');
     }
