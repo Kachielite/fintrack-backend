@@ -50,6 +50,7 @@ export interface ImportTarget {
   accountId?: number;
   currency?: string;
   bankId?: number;
+  label?: string;
 }
 
 // Output of the fast, synchronous validate-and-parse phase — small and fully
@@ -1028,7 +1029,13 @@ class TransactionService implements ITransactionService {
         defaultCurrency = account.currency;
         defaultBankId = account.bankId;
       } else if (target?.currency) {
-        const account = await this.accountService.resolveOrCreate(userId, target.bankId ?? null, target.currency);
+        const account = await this.accountService.resolveOrCreate(
+          userId,
+          target.bankId ?? null,
+          target.currency,
+          null,
+          target.label,
+        );
         defaultCurrency = account.currency;
         defaultBankId = account.bankId;
       }
