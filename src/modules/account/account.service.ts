@@ -124,9 +124,11 @@ class AccountService implements IAccountService {
         return await this.mapToDTO(merged);
       }
 
-      const updateData: { label?: string; isActive?: boolean } = {};
+      const updateData: { label?: string; isActive?: boolean; bankId?: number; accountNumberMask?: string } = {};
       if (data.label !== undefined) updateData.label = data.label;
       if (data.is_active !== undefined) updateData.isActive = data.is_active;
+      if (data.bank_id !== undefined) updateData.bankId = data.bank_id;
+      if (data.account_number !== undefined) updateData.accountNumberMask = data.account_number;
 
       const updated = await this.accountRepository.update(id, userId, updateData);
       return await this.mapToDTO(updated);
