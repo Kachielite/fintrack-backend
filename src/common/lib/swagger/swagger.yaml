@@ -534,8 +534,22 @@ components:
         balance:
           type: number
 
+    ImportQueued:
+      type: object
+      properties:
+        status:
+          type: string
+          example: processing
+        message:
+          type: string
+          example: "Your statement is being imported — we'll notify you when it's done."
+
     ImportResult:
       type: object
+      description: >
+        Not returned by any endpoint directly — this is the shape of the
+        `data` field on the `import_complete` notification created once
+        background processing finishes.
       properties:
         imported:
           type: number
