@@ -53,13 +53,17 @@ class AccountController extends BaseController {
    *     tags: [Accounts]
    *     summary: Create a new account
    *     description: >
-   *       Dedupes by (bank_id, currency) — if a matching account already exists
-   *       (including a deactivated one, which gets reactivated) it's returned
-   *       as-is rather than creating a duplicate; label is only applied when a
-   *       new account is actually created, never used to rename an existing
-   *       match. Also used internally by statement import to create an
-   *       account inline when the user picks "create new" instead of an
-   *       existing account.
+   *       Dedupes by (bank_id, currency, account_number): if a matching account
+   *       already exists (including a deactivated one, which gets reactivated)
+   *       it's returned as-is rather than creating a duplicate. account_number
+   *       distinguishes two accounts at the same bank in the same currency
+   *       (checking vs. savings) that would otherwise collide; an existing
+   *       account with no number on file yet is treated as a match and
+   *       backfilled, but one with a different number already set is treated
+   *       as genuinely different. label is only applied when a new account is
+   *       actually created, never used to rename an existing match. Also used
+   *       internally by statement import to create an account inline when the
+   *       user picks "create new" instead of an existing account.
    *     security:
    *       - bearerAuth: []
    *     requestBody:
@@ -79,6 +83,10 @@ class AccountController extends BaseController {
    *               label:
    *                 type: string
    *                 example: M-Pesa
+   *               account_number:
+   *                 type: string
+   *                 description: Distinguishes two accounts at the same bank in the same currency (checking vs. savings).
+   *                 example: "1234"
    *     responses:
    *       '201':
    *         description: Created (or matched an existing) account
