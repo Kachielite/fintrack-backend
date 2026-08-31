@@ -83,6 +83,18 @@ class EmailConnectionController extends BaseController {
    *               $ref: '#/components/schemas/EmailConnection'
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
+   *       '403':
+   *         description: >
+   *           Free-tier plan connection limit reached. Response body includes a
+   *           machine-readable `code: "PLAN_LIMIT_EMAIL_CONNECTIONS"` so the
+   *           client can show an upgrade prompt instead of a generic error.
+   *           Only applies when connecting a genuinely new Gmail address —
+   *           reconnecting a previously revoked connection for the same
+   *           address is never blocked by this limit.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/PlanLimitError'
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */

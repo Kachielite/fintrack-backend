@@ -68,6 +68,22 @@ components:
           type: string
           example: An unexpected error occurred
 
+    PlanLimitError:
+      type: object
+      properties:
+        statusCode:
+          type: integer
+          example: 403
+        error:
+          type: string
+          example: Forbidden
+        message:
+          type: string
+          example: Free plan is limited to 1 email connection. Upgrade to Pro for unlimited connections.
+        code:
+          type: string
+          example: PLAN_LIMIT_EMAIL_CONNECTIONS
+
     # ── Generic success ───────────────────────────────────────────────────────
     SuccessResponse:
       type: object

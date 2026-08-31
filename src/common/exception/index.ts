@@ -18,6 +18,16 @@ export class ForbiddenException extends HttpError {
   }
 }
 
+/**
+ * Forbidden, but with a machine-readable `code` so the frontend can turn it
+ * into a specific upgrade prompt instead of a generic error toast.
+ */
+export class PlanLimitException extends HttpError {
+  constructor(message: string, code: string) {
+    super(403, 'Forbidden', message, code);
+  }
+}
+
 export class ResourceNotFoundException extends HttpError {
   constructor(message: string = 'Resource Not Found') {
     super(404, 'Resource Not Found', message);
