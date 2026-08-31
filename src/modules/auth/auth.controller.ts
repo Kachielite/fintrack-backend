@@ -48,6 +48,10 @@ class AuthController extends BaseController {
    *               id_token:
    *                 type: string
    *                 example: eyJhbGciOiJSUzI1NiJ9...
+   *               terms_accepted:
+   *                 type: boolean
+   *                 description: Required and must be `true` only on first-time sign-in, when this call creates a brand-new account. Ignored for a returning user, who has already consented.
+   *                 example: true
    *     responses:
    *       '200':
    *         description: Auth tokens and user info
@@ -56,7 +60,7 @@ class AuthController extends BaseController {
    *             schema:
    *               $ref: '#/components/schemas/AuthResponse'
    *       '400':
-   *         $ref: '#/components/responses/BadRequest'
+   *         description: Invalid Google token, or a first-time sign-in missing terms_accepted
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
@@ -88,6 +92,10 @@ class AuthController extends BaseController {
    *               last_name:
    *                 type: string
    *                 example: Doe
+   *               terms_accepted:
+   *                 type: boolean
+   *                 description: Required and must be `true` only on first-time sign-in, when this call creates a brand-new account. Ignored for a returning user, who has already consented.
+   *                 example: true
    *     responses:
    *       '200':
    *         description: Auth tokens and user info
@@ -96,7 +104,7 @@ class AuthController extends BaseController {
    *             schema:
    *               $ref: '#/components/schemas/AuthResponse'
    *       '400':
-   *         $ref: '#/components/responses/BadRequest'
+   *         description: Invalid Apple token, or a first-time sign-in missing terms_accepted
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
@@ -156,7 +164,7 @@ class AuthController extends BaseController {
    *         application/json:
    *           schema:
    *             type: object
-   *             required: [email, password, first_name]
+   *             required: [email, password, first_name, terms_accepted]
    *             properties:
    *               email:
    *                 type: string
@@ -170,6 +178,10 @@ class AuthController extends BaseController {
    *               last_name:
    *                 type: string
    *                 example: Doe
+   *               terms_accepted:
+   *                 type: boolean
+   *                 description: Must be `true` — the request is rejected otherwise. Recorded server-side as proof of consent.
+   *                 example: true
    *     responses:
    *       '200':
    *         description: Auth tokens and user info
@@ -178,7 +190,7 @@ class AuthController extends BaseController {
    *             schema:
    *               $ref: '#/components/schemas/AuthResponse'
    *       '400':
-   *         $ref: '#/components/responses/BadRequest'
+   *         description: Validation error, including a missing or false `terms_accepted`
    *       '409':
    *         description: Email already registered
    *       '500':

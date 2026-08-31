@@ -16,6 +16,7 @@ export interface IUser {
   planTier: string;
   dataRetentionMonths: number;
   deletedAt: Date | null;
+  termsAcceptedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -25,6 +26,7 @@ export interface ICreateUser {
   firstName: string;
   lastName?: string;
   passwordHash?: string;
+  termsAcceptedAt?: Date;
 }
 
 export interface IUpdateUser {

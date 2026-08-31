@@ -99,6 +99,13 @@
       "when": 1788149504070,
       "tag": "0013_account_soft_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788150351319,
+      "tag": "0014_signup_terms_consent",
+      "breakpoints": true
     }
   ]
 }

@@ -30,6 +30,7 @@ class UserRepositoryImpl implements IUserRepository {
         firstName: data.firstName,
         lastName: data.lastName,
         passwordHash: data.passwordHash,
+        termsAcceptedAt: data.termsAcceptedAt,
       })
       .returning();
     return row as IUser;
