@@ -110,6 +110,10 @@ components:
           example: eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MX0.def456
         user:
           $ref: '#/components/schemas/AuthUser'
+        reactivated:
+          type: boolean
+          description: Present and true when this login reactivated an account that was pending deletion.
+          example: false
 
     TokenRefreshResponse:
       type: object

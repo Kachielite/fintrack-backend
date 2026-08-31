@@ -15,6 +15,7 @@ export interface IUser {
   passwordHash: string | null;
   planTier: string;
   dataRetentionMonths: number;
+  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

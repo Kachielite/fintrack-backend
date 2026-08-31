@@ -3,18 +3,17 @@ import { IUserRepository } from './user.repository';
 import { IUser, ICompleteOnboarding, IUpdateUser } from './user.interface';
 import { UpdateUserDTO, CompleteOnboardingDTO, UserResponseDTO } from './user.dto';
 import { IGeneralResponse } from '@/common/types/interface';
-import {
-  InternalServerException,
-  ResourceNotFoundException,
-  UnAuthorizedException,
-} from '@/common/exception';
+import { InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
+
+const DELETION_GRACE_PERIOD_DAYS = 14;
 
 export interface IUserService {
   getMe(userId: number): Promise<UserResponseDTO>;
   updateMe(userId: number, data: UpdateUserDTO): Promise<UserResponseDTO>;
   completeOnboarding(userId: number, data: CompleteOnboardingDTO): Promise<UserResponseDTO>;
   deleteMe(userId: number): Promise<IGeneralResponse<null>>;
+  purgeScheduledDeletions(): Promise<void>;
 }
 
 @injectable()
@@ -73,15 +72,36 @@ class UserService implements IUserService {
 
   async deleteMe(userId: number): Promise<IGeneralResponse<null>> {
     try {
-      logger.info(`[User] Deleting account for user ${userId}`);
+      logger.info(`[User] Scheduling account deletion for user ${userId}`);
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
-      await this.userRepository.deleteUser(userId);
-      return { success: true, message: 'Account deleted successfully', data: null };
+      await this.userRepository.scheduleDeletion(userId);
+      return {
+        success: true,
+        message: 'Account scheduled for deletion. Log in within 14 days to cancel.',
+        data: null,
+      };
     } catch (error) {
       if (error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error deleting user ${userId} - ${error}`);
       throw new InternalServerException('Failed to delete account');
+    }
+  }
+
+  async purgeScheduledDeletions(): Promise<void> {
+    try {
+      logger.info('[User] Starting scheduled-deletion purge job');
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - DELETION_GRACE_PERIOD_DAYS);
+
+      const pending = await this.userRepository.findPendingDeletionOlderThan(cutoff);
+      for (const user of pending) {
+        await this.userRepository.hardDeleteUser(user.id);
+        logger.info(`[User] Purged user ${user.id} after 14-day deletion grace period`);
+      }
+      logger.info(`[User] Scheduled-deletion purge job complete (${pending.length} user(s) purged)`);
+    } catch (error) {
+      logger.error(`Error purging scheduled deletions - ${error}`);
     }
   }
 

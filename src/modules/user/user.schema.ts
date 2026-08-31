@@ -15,6 +15,7 @@ export const UserSchema = pgTable('users', {
   passwordHash: text('password_hash'),
   planTier: text('plan_tier').default('free').notNull(),
   dataRetentionMonths: integer('data_retention_months').default(3).notNull(),
+  deletedAt: timestamp('deleted_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
