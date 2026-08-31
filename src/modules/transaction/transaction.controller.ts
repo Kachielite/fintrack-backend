@@ -26,10 +26,10 @@ import {
   UnmarkTransferDTO,
   CreateManualTransactionSchema,
   CreateManualTransactionDTO,
-  ImportTransactionsCsvSchema,
-  ImportTransactionsCsvDTO,
 } from './transaction.dto';
 import { IAuthenticatedRequest } from '@/common/types/interface';
+import { BadRequestException } from '@/common/exception';
+import { statementUpload } from '@/middleware/statement-upload.middleware';
 
 @injectable()
 @Controller('/transactions')
@@ -151,20 +151,21 @@ class TransactionController extends BaseController {
    * /transactions/import:
    *   post:
    *     tags: [Transactions]
-   *     summary: Bulk-import transactions from a CSV (same column layout as GET /transactions/export)
+   *     summary: Bulk-import transactions from an uploaded bank statement (CSV, Excel .xlsx, PDF, or Word .docx)
    *     security:
    *       - bearerAuth: []
    *     requestBody:
    *       required: true
    *       content:
-   *         application/json:
+   *         multipart/form-data:
    *           schema:
    *             type: object
-   *             required: [csv]
+   *             required: [file]
    *             properties:
-   *               csv:
+   *               file:
    *                 type: string
-   *                 description: Raw CSV content with a header row (date, merchant, category, type, amount, currency, reference, balance)
+   *                 format: binary
+   *                 description: The statement file. Supported types — CSV, XLSX, PDF, DOCX. Max 20MB.
    *     responses:
    *       '200':
    *         description: Import result
@@ -179,11 +180,18 @@ class TransactionController extends BaseController {
    *       '500':
    *         $ref: '#/components/responses/InternalServerError'
    */
-  @Post('/import', { validate: ImportTransactionsCsvSchema })
+  @Post('/import', { middleware: [statementUpload] })
   async importTransactions(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    const { csv } = req.body as ImportTransactionsCsvDTO;
-    return await this.service.importTransactionsCsv(userId, csv);
+    const file = (req as Request & { file?: Express.Multer.File }).file;
+    if (!file) {
+      throw new BadRequestException('No file was uploaded. Attach a file under the "file" field.');
+    }
+    return await this.service.importStatementFile(userId, {
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalName: file.originalname,
+    });
   }
 
   /**

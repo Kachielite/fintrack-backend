@@ -8,11 +8,14 @@ import {
   CreateManualTransactionDTO,
 } from './transaction.dto';
 import { parse } from 'csv-parse/sync';
+import { PDFParse } from 'pdf-parse';
+import ExcelJS from 'exceljs';
+import * as mammoth from 'mammoth';
 import { TransactionStatusEnum, TransactionTypeEnum, CategoryEnum } from './transaction.enum';
-import { IParserRuleService } from '@/modules/parser-rule/parser-rule.service';
+import { IParserRuleService, ExtractedStatementTransaction } from '@/modules/parser-rule/parser-rule.service';
 import ParserRuleService from '@/modules/parser-rule/parser-rule.service';
 import { ITransferLinkRepository } from '@/modules/account/transfer-link.repository';
-import { IGeneralResponse, IPagination } from '@/common/types/interface';
+import { IPagination } from '@/common/types/interface';
 import { BadRequestException, InternalServerException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
 import { IUserRepository } from '@/modules/user/user.repository';
@@ -23,6 +26,25 @@ import NotificationService, { INotificationService } from '@/modules/notificatio
 import AccountService, { IAccountService } from '@/modules/account/account.service';
 import TransferDetectionService, { ITransferDetectionService } from '@/modules/account/transfer-detection.service';
 import { ICategoryRepository } from '@/modules/category/category.repository';
+import { IBankRepository } from '@/modules/bank/bank.repository';
+
+export type StatementFormat = 'csv' | 'xlsx' | 'pdf' | 'docx';
+
+export interface StatementFile {
+  buffer: Buffer;
+  mimetype: string;
+  originalName: string;
+}
+
+interface TransactionCandidate {
+  merchant: string;
+  transactionDate: Date;
+  amountAbs: number;
+  transactionType: TransactionTypeEnum;
+  currency: string;
+  reference?: string;
+  balance?: number;
+}
 
 // Extra buffer between a transaction crossing the retention cutoff and it
 // actually being deleted, so the warning notification always has real lead time.
@@ -61,9 +83,9 @@ export interface ITransactionService {
   }>;
   exportTransactionsCsv(userId: number): Promise<string>;
   createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction>;
-  importTransactionsCsv(
+  importStatementFile(
     userId: number,
-    csv: string,
+    file: StatementFile,
   ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }>;
 }
 
@@ -79,6 +101,7 @@ class TransactionService implements ITransactionService {
     @inject(AccountService) private accountService: IAccountService,
     @inject('ICategoryRepository') private categoryRepository: ICategoryRepository,
     @inject(TransferDetectionService) private transferDetectionService: ITransferDetectionService,
+    @inject('IBankRepository') private bankRepository: IBankRepository,
   ) {}
 
   async listTransactions(
@@ -747,41 +770,206 @@ class TransactionService implements ITransactionService {
   }
 
   /**
-   * Parses an uploaded CSV into transactions. Users can't be expected to
-   * format their export into a fixed column layout, so an AI pass first
-   * looks at the header row + a few sample rows once to figure out which
-   * column is the date, merchant, amount (single signed / debit-credit
-   * split / unsigned-with-type-column), currency, reference, and balance —
-   * then every row is parsed deterministically against that one mapping.
-   * This keeps AI involvement to a single call regardless of file size,
-   * and never lets it read or transcribe amounts itself.
-   * Deduped the same way ingestion dedupes, via existsSimilarTransaction.
+   * Detects the uploaded statement's format from its mimetype/extension.
+   * Extension wins ties for legacy-format cases (.xls/.doc) since mobile
+   * clients frequently send a generic or mismatched mimetype.
    */
-  async importTransactionsCsv(
+  private detectStatementFormat(mimetype: string, filename: string): StatementFormat {
+    const ext = filename.split('.').pop()?.toLowerCase();
+
+    if (ext === 'xls') {
+      throw new BadRequestException(
+        'Legacy .xls files are not supported yet — please re-save as .xlsx, or export as CSV, and try again.',
+      );
+    }
+    if (ext === 'doc') {
+      throw new BadRequestException(
+        'Legacy .doc files are not supported — please save the document as .docx and try again.',
+      );
+    }
+    if (mimetype === 'text/csv' || mimetype === 'application/csv' || ext === 'csv') return 'csv';
+    if (mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || ext === 'xlsx') {
+      return 'xlsx';
+    }
+    if (mimetype === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === 'docx') {
+      return 'docx';
+    }
+
+    throw new BadRequestException(
+      'Unsupported file type. Supported formats: CSV, Excel (.xlsx), PDF, and Word (.docx).',
+    );
+  }
+
+  /** Reads the first sheet of an .xlsx workbook into the same header-keyed row shape CSV parsing produces. */
+  private async parseExcelBuffer(buffer: Buffer): Promise<Record<string, string>[]> {
+    const workbook = new ExcelJS.Workbook();
+    try {
+      await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    } catch (error) {
+      throw new BadRequestException(`Could not read this Excel file: ${error}`);
+    }
+
+    // v1 limitation: only the first sheet is read — multi-sheet statements need a
+    // future sheet-selection step rather than silently guessing the right one.
+    const sheet = workbook.worksheets[0];
+    if (!sheet) return [];
+
+    const headers: string[] = [];
+    sheet.getRow(1).eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      headers[colNumber - 1] = String(cell.value ?? '').trim();
+    });
+
+    const rows: Record<string, string>[] = [];
+    for (let r = 2; r <= sheet.rowCount; r++) {
+      const row = sheet.getRow(r);
+      if (row.cellCount === 0) continue;
+
+      const record: Record<string, string> = {};
+      let hasValue = false;
+      headers.forEach((header, i) => {
+        if (!header) return;
+        const value = this.excelCellToString(row.getCell(i + 1).value);
+        record[header] = value;
+        if (value) hasValue = true;
+      });
+      if (hasValue) rows.push(record);
+    }
+    return rows;
+  }
+
+  private excelCellToString(value: ExcelJS.CellValue): string {
+    if (value == null) return '';
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'object') {
+      if ('result' in value) return String(value.result ?? '');
+      if ('text' in value) return String((value as { text: unknown }).text ?? '');
+      if ('richText' in value) {
+        return (value as { richText: { text: string }[] }).richText.map((t) => t.text).join('');
+      }
+    }
+    return String(value);
+  }
+
+  /** Extracts plain text from a PDF; throws a clear error for scanned/image-only PDFs with no text layer. */
+  private async extractPdfText(buffer: Buffer): Promise<string> {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      const text = result.text?.trim() ?? '';
+      if (text.length < 20) {
+        throw new BadRequestException(
+          "This PDF doesn't contain readable text — it may be a scanned image. Try exporting a text-based statement instead, or use CSV/Excel/Word.",
+        );
+      }
+      return text;
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(`Could not read this PDF: ${error}`);
+    } finally {
+      await parser.destroy();
+    }
+  }
+
+  private async extractDocxText(buffer: Buffer): Promise<string> {
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      const text = result.value?.trim() ?? '';
+      if (!text) {
+        throw new BadRequestException("This Word document doesn't contain any readable text.");
+      }
+      return text;
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(`Could not read this Word document: ${error}`);
+    }
+  }
+
+  /**
+   * Cheap, zero-AI-cost bank identification for PDF/Word statements: a case-insensitive
+   * substring match of each known bank's name against the extracted document text.
+   * Ambiguous (zero or multiple matches) intentionally omits bankId rather than guessing —
+   * this only ever narrows dedup/account-matching, never blocks the import.
+   */
+  private async detectBankIdFromText(text: string): Promise<number | undefined> {
+    const banks = await this.bankRepository.findAll();
+    const haystack = text.toLowerCase();
+    const matches = banks.filter((b) => haystack.includes(b.name.toLowerCase()));
+    return matches.length === 1 ? matches[0].id : undefined;
+  }
+
+  /**
+   * Shared tail of every import path once a candidate row/line has been parsed:
+   * dedup via existsSimilarTransaction (same method the email-ingestion pipeline
+   * uses), category resolution, account resolution, currency conversion, and
+   * creation. CSV/Excel reach this after AI column-mapping + deterministic
+   * per-row parsing; PDF/Word reach it directly from AI-extracted candidates.
+   */
+  private async createCandidateIfNew(
     userId: number,
-    csv: string,
+    user: IUser,
+    bankId: number | undefined,
+    candidate: TransactionCandidate,
+    resolveRowCategory: (merchant: string) => Promise<string>,
+  ): Promise<'imported' | 'duplicate'> {
+    const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
+      userId,
+      bankId,
+      currency: candidate.currency,
+      amountAbs: candidate.amountAbs,
+      transactionType: candidate.transactionType,
+      reference: candidate.reference,
+      merchant: candidate.merchant,
+      transactionDate: candidate.transactionDate,
+    });
+    if (isDuplicate) return 'duplicate';
+
+    const [category, account, refAmount, exchangeRateUsed] = await Promise.all([
+      resolveRowCategory(candidate.merchant),
+      this.accountService.resolveOrCreate(userId, bankId ?? null, candidate.currency),
+      this.exchangeRateService.convert(candidate.amountAbs, candidate.currency, user.refCurrency),
+      this.exchangeRateService.getRate(candidate.currency, user.refCurrency),
+    ]);
+
+    const signedAmount =
+      candidate.transactionType === TransactionTypeEnum.DEBIT ? -candidate.amountAbs : candidate.amountAbs;
+
+    await this.transactionRepository.create({
+      userId,
+      accountId: account.id,
+      merchant: candidate.merchant,
+      category,
+      transactionType: candidate.transactionType,
+      amount: signedAmount,
+      currency: candidate.currency,
+      refAmount,
+      refCurrency: user.refCurrency,
+      exchangeRateUsed,
+      transactionDate: candidate.transactionDate,
+      status: TransactionStatusEnum.VERIFIED,
+      reference: candidate.reference,
+      balance: candidate.balance,
+    });
+    return 'imported';
+  }
+
+  /**
+   * Imports a bank statement in any of CSV, Excel (.xlsx), PDF, or Word (.docx)
+   * format. CSV/Excel go through the existing AI column-mapping + deterministic
+   * per-row parsing (tabular formats produce clean rows); PDF/Word don't reliably
+   * produce tabular rows, so their text is fed through a dedicated AI extraction
+   * pass instead. Every path funnels through the same dedup/create tail — see
+   * createCandidateIfNew — so no format gets its own bespoke dedup logic.
+   */
+  async importStatementFile(
+    userId: number,
+    file: StatementFile,
   ): Promise<{ imported: number; skippedDuplicates: number; skippedInvalid: number; errors: string[] }> {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) throw new ResourceNotFoundException('User not found');
 
-      let records: Record<string, string>[];
-      try {
-        records = parse(csv, { columns: true, skip_empty_lines: true, trim: true });
-      } catch (parseError) {
-        throw new BadRequestException(`Could not parse CSV: ${parseError}`);
-      }
-      if (records.length === 0) {
-        throw new BadRequestException('CSV has no data rows');
-      }
-
-      const headers = Object.keys(records[0]);
-      const mapping = await this.parserRuleService.detectCsvMapping(headers, records.slice(0, 5));
-      if (!mapping) {
-        throw new BadRequestException(
-          "Could not figure out this CSV's format — make sure it has columns for date, description, and amount.",
-        );
-      }
+      const format = this.detectStatementFormat(file.mimetype, file.originalName);
 
       const allCategories = await this.categoryRepository.findAll();
       const categorySlugs = allCategories.map((c) => c.slug);
@@ -818,123 +1006,171 @@ class TransactionService implements ITransactionService {
       let skippedInvalid = 0;
       const errors: string[] = [];
 
-      for (let i = 0; i < records.length; i++) {
-        const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
-        const row = records[i];
-        try {
-          const merchant = row[mapping.merchantColumn]?.trim();
-          const dateRaw = row[mapping.dateColumn]?.trim();
-          if (!merchant || !dateRaw) {
-            skippedInvalid++;
-            errors.push(`Row ${rowNumber}: missing description or date`);
-            continue;
+      if (format === 'csv' || format === 'xlsx') {
+        let records: Record<string, string>[];
+        if (format === 'csv') {
+          try {
+            records = parse(file.buffer.toString('utf-8'), {
+              columns: true,
+              skip_empty_lines: true,
+              trim: true,
+            });
+          } catch (parseError) {
+            throw new BadRequestException(`Could not parse CSV: ${parseError}`);
           }
+        } else {
+          records = await this.parseExcelBuffer(file.buffer);
+        }
 
-          const transactionDate = this.parseCsvDate(dateRaw, mapping.dateFormat);
-          if (!transactionDate) {
-            skippedInvalid++;
-            errors.push(`Row ${rowNumber}: could not parse date "${dateRaw}"`);
-            continue;
-          }
+        if (records.length === 0) {
+          throw new BadRequestException(`${format === 'csv' ? 'CSV' : 'Excel file'} has no data rows`);
+        }
 
-          let amountAbs: number;
-          let transactionType: TransactionTypeEnum;
-          if (mapping.amountMode === 'debit_credit_split') {
-            const debitRaw = mapping.debitColumn ? row[mapping.debitColumn]?.trim() : '';
-            const creditRaw = mapping.creditColumn ? row[mapping.creditColumn]?.trim() : '';
-            const debitVal = debitRaw ? Math.abs(parseFloat(debitRaw.replace(/,/g, ''))) : 0;
-            const creditVal = creditRaw ? Math.abs(parseFloat(creditRaw.replace(/,/g, ''))) : 0;
-            if (debitVal > 0) {
-              amountAbs = debitVal;
-              transactionType = TransactionTypeEnum.DEBIT;
-            } else if (creditVal > 0) {
-              amountAbs = creditVal;
-              transactionType = TransactionTypeEnum.CREDIT;
-            } else {
+        const headers = Object.keys(records[0]);
+        const mapping = await this.parserRuleService.detectCsvMapping(headers, records.slice(0, 5));
+        if (!mapping) {
+          throw new BadRequestException(
+            "Could not figure out this file's format — make sure it has columns for date, description, and amount.",
+          );
+        }
+
+        for (let i = 0; i < records.length; i++) {
+          const rowNumber = i + 2; // +1 for header, +1 for 1-indexing
+          const row = records[i];
+          try {
+            const merchant = row[mapping.merchantColumn]?.trim();
+            const dateRaw = row[mapping.dateColumn]?.trim();
+            if (!merchant || !dateRaw) {
               skippedInvalid++;
-              errors.push(`Row ${rowNumber}: no debit or credit amount`);
+              errors.push(`Row ${rowNumber}: missing description or date`);
               continue;
             }
-          } else {
-            const amountRaw = mapping.amountColumn ? row[mapping.amountColumn]?.trim() : '';
-            const parsed = amountRaw ? parseFloat(amountRaw.replace(/,/g, '')) : NaN;
-            if (!isFinite(parsed) || parsed === 0) {
+
+            const transactionDate = this.parseCsvDate(dateRaw, mapping.dateFormat);
+            if (!transactionDate) {
               skippedInvalid++;
-              errors.push(`Row ${rowNumber}: missing or invalid amount`);
+              errors.push(`Row ${rowNumber}: could not parse date "${dateRaw}"`);
               continue;
             }
-            amountAbs = Math.abs(parsed);
-            if (mapping.amountMode === 'single_unsigned_with_type' && mapping.typeColumn) {
-              const typeRaw = (row[mapping.typeColumn] || '').trim().toLowerCase();
-              transactionType = /credit|deposit|\bcr\b/.test(typeRaw)
-                ? TransactionTypeEnum.CREDIT
-                : TransactionTypeEnum.DEBIT;
+
+            let amountAbs: number;
+            let transactionType: TransactionTypeEnum;
+            if (mapping.amountMode === 'debit_credit_split') {
+              const debitRaw = mapping.debitColumn ? row[mapping.debitColumn]?.trim() : '';
+              const creditRaw = mapping.creditColumn ? row[mapping.creditColumn]?.trim() : '';
+              const debitVal = debitRaw ? Math.abs(parseFloat(debitRaw.replace(/,/g, ''))) : 0;
+              const creditVal = creditRaw ? Math.abs(parseFloat(creditRaw.replace(/,/g, ''))) : 0;
+              if (debitVal > 0) {
+                amountAbs = debitVal;
+                transactionType = TransactionTypeEnum.DEBIT;
+              } else if (creditVal > 0) {
+                amountAbs = creditVal;
+                transactionType = TransactionTypeEnum.CREDIT;
+              } else {
+                skippedInvalid++;
+                errors.push(`Row ${rowNumber}: no debit or credit amount`);
+                continue;
+              }
             } else {
-              transactionType = parsed < 0 ? TransactionTypeEnum.DEBIT : TransactionTypeEnum.CREDIT;
+              const amountRaw = mapping.amountColumn ? row[mapping.amountColumn]?.trim() : '';
+              const parsed = amountRaw ? parseFloat(amountRaw.replace(/,/g, '')) : NaN;
+              if (!isFinite(parsed) || parsed === 0) {
+                skippedInvalid++;
+                errors.push(`Row ${rowNumber}: missing or invalid amount`);
+                continue;
+              }
+              amountAbs = Math.abs(parsed);
+              if (mapping.amountMode === 'single_unsigned_with_type' && mapping.typeColumn) {
+                const typeRaw = (row[mapping.typeColumn] || '').trim().toLowerCase();
+                transactionType = /credit|deposit|\bcr\b/.test(typeRaw)
+                  ? TransactionTypeEnum.CREDIT
+                  : TransactionTypeEnum.DEBIT;
+              } else {
+                transactionType = parsed < 0 ? TransactionTypeEnum.DEBIT : TransactionTypeEnum.CREDIT;
+              }
             }
+
+            const currency =
+              (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
+              mapping.defaultCurrency ||
+              user.refCurrency;
+            const reference =
+              (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
+            const balanceRaw = mapping.balanceColumn ? row[mapping.balanceColumn]?.trim() : '';
+            const balance = balanceRaw ? parseFloat(balanceRaw.replace(/,/g, '')) : undefined;
+
+            const result = await this.createCandidateIfNew(
+              userId,
+              user,
+              undefined, // bankId unknown for tabular formats — unchanged from prior CSV behavior
+              { merchant, transactionDate, amountAbs, transactionType, currency, reference, balance },
+              resolveRowCategory,
+            );
+            if (result === 'duplicate') skippedDuplicates++;
+            else imported++;
+          } catch (rowError) {
+            skippedInvalid++;
+            errors.push(`Row ${rowNumber}: ${rowError}`);
           }
+        }
+      } else {
+        const text = format === 'pdf' ? await this.extractPdfText(file.buffer) : await this.extractDocxText(file.buffer);
+        const bankId = await this.detectBankIdFromText(text);
 
-          const currency =
-            (mapping.currencyColumn ? row[mapping.currencyColumn]?.trim() : '') ||
-            mapping.defaultCurrency ||
-            user.refCurrency;
-          const reference =
-            (mapping.referenceColumn ? row[mapping.referenceColumn]?.trim() : undefined) || undefined;
-          const balanceRaw = mapping.balanceColumn ? row[mapping.balanceColumn]?.trim() : '';
-          const balance = balanceRaw ? parseFloat(balanceRaw.replace(/,/g, '')) : undefined;
-          const signedAmount = transactionType === TransactionTypeEnum.DEBIT ? -amountAbs : amountAbs;
+        const extracted: ExtractedStatementTransaction[] | null =
+          await this.parserRuleService.extractTransactionsFromDocument(text, user.refCurrency);
+        if (extracted === null) {
+          throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
+        }
+        if (extracted.length === 0) {
+          throw new BadRequestException(
+            "Couldn't find any transactions in this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
+          );
+        }
 
-          const isDuplicate = await this.transactionRepository.existsSimilarTransaction({
-            userId,
-            currency,
-            amountAbs,
-            transactionType,
-            reference,
-            merchant,
-            transactionDate,
-          });
-          if (isDuplicate) {
-            skippedDuplicates++;
-            continue;
+        for (let i = 0; i < extracted.length; i++) {
+          const itemNumber = i + 1;
+          const item = extracted[i];
+          try {
+            const transactionDate = new Date(item.date);
+            if (isNaN(transactionDate.getTime())) {
+              skippedInvalid++;
+              errors.push(`Item ${itemNumber}: could not parse date "${item.date}"`);
+              continue;
+            }
+
+            const result = await this.createCandidateIfNew(
+              userId,
+              user,
+              bankId,
+              {
+                merchant: item.merchant,
+                transactionDate,
+                amountAbs: item.amount,
+                transactionType:
+                  item.transactionType === 'credit' ? TransactionTypeEnum.CREDIT : TransactionTypeEnum.DEBIT,
+                currency: item.currency || user.refCurrency,
+                reference: item.reference ?? undefined,
+                balance: item.balance ?? undefined,
+              },
+              resolveRowCategory,
+            );
+            if (result === 'duplicate') skippedDuplicates++;
+            else imported++;
+          } catch (itemError) {
+            skippedInvalid++;
+            errors.push(`Item ${itemNumber}: ${itemError}`);
           }
-
-          const [category, account, refAmount, exchangeRateUsed] = await Promise.all([
-            resolveRowCategory(merchant),
-            this.accountService.resolveOrCreate(userId, null, currency),
-            this.exchangeRateService.convert(amountAbs, currency, user.refCurrency),
-            this.exchangeRateService.getRate(currency, user.refCurrency),
-          ]);
-
-          await this.transactionRepository.create({
-            userId,
-            accountId: account.id,
-            merchant,
-            category,
-            transactionType,
-            amount: signedAmount,
-            currency,
-            refAmount,
-            refCurrency: user.refCurrency,
-            exchangeRateUsed,
-            transactionDate,
-            status: TransactionStatusEnum.VERIFIED,
-            reference,
-            balance,
-          });
-          imported++;
-        } catch (rowError) {
-          skippedInvalid++;
-          errors.push(`Row ${rowNumber}: ${rowError}`);
         }
       }
 
       logger.info(
-        `[Transaction] CSV import for user ${userId}: imported=${imported}, duplicates=${skippedDuplicates}, invalid=${skippedInvalid}`,
+        `[Transaction] Statement import (${format}) for user ${userId}: imported=${imported}, duplicates=${skippedDuplicates}, invalid=${skippedInvalid}`,
       );
       return { imported, skippedDuplicates, skippedInvalid, errors: errors.slice(0, 20) };
     } catch (error) {
       if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
-      logger.error(`Error importing CSV transactions for user ${userId} - ${error}`);
+      logger.error(`Error importing statement file for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to import transactions');
     }
   }

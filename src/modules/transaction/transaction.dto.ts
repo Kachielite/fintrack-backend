@@ -63,7 +63,3 @@ export const CreateManualTransactionSchema = z.object({
 });
 export type CreateManualTransactionDTO = z.infer<typeof CreateManualTransactionSchema>;
 
-export const ImportTransactionsCsvSchema = z.object({
-  csv: z.string().min(1),
-});
-export type ImportTransactionsCsvDTO = z.infer<typeof ImportTransactionsCsvSchema>;
