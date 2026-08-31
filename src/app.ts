@@ -23,6 +23,7 @@ import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { getIngestionQueue } from '@/modules/ingestion/ingestion.queue';
+import { HttpError } from '@/common/exception/http-error';
 
 @injectable()
 class App {
@@ -147,7 +148,13 @@ class App {
         res.redirect(`${APP_DEEP_LINK}?connection_id=${connection.id}&already_connected=${alreadyConnected}`);
       } catch (err) {
         logger.error(`Gmail OAuth server callback failed - ${err}`);
-        res.redirect(`${APP_DEEP_LINK}?error=callback_failed`);
+        // Preserve a machine-readable error code (e.g. PLAN_LIMIT_EMAIL_CONNECTIONS)
+        // when the failure came from a known HttpError, so the app can show a
+        // specific upgrade prompt instead of a generic failure toast. This is the
+        // only path real users hit — the POST /google/callback controller route
+        // exists but the app never calls it directly.
+        const code = err instanceof HttpError && err.code ? err.code : 'callback_failed';
+        res.redirect(`${APP_DEEP_LINK}?error=${encodeURIComponent(code)}`);
       }
     });
   }
