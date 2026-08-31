@@ -50,7 +50,7 @@ class AccountService implements IAccountService {
     label?: string,
   ): Promise<IAccount> {
     try {
-      const existing = await this.accountRepository.findMatch(userId, bankId, currency);
+      const existing = await this.accountRepository.findMatch(userId, bankId, currency, mask);
       if (existing) {
         let account = existing;
         // A matching bank/currency account that was deactivated (e.g. emptied out by
@@ -59,10 +59,6 @@ class AccountService implements IAccountService {
         if (!account.isActive) {
           logger.info(`[Account] Reactivating account ${account.id} for user ${userId} on new matching data`);
           account = await this.accountRepository.update(account.id, userId, { isActive: true });
-        }
-        // Backfill the mask once we see it, even if the account was first created without one.
-        if (mask && !account.accountNumberMask) {
-          account = await this.accountRepository.setMask(account.id, mask);
         }
         // Deliberately not renaming on reuse — a caller passing a custom label
         // (e.g. a user explicitly creating an account) shouldn't silently
@@ -90,7 +86,13 @@ class AccountService implements IAccountService {
   }
 
   async createAccount(userId: number, data: CreateAccountDTO): Promise<AccountResponseDTO> {
-    const account = await this.resolveOrCreate(userId, data.bank_id ?? null, data.currency, null, data.label);
+    const account = await this.resolveOrCreate(
+      userId,
+      data.bank_id ?? null,
+      data.currency,
+      data.account_number ?? null,
+      data.label,
+    );
     return await this.mapToDTO(account);
   }
 

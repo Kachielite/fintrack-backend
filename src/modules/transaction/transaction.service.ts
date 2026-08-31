@@ -51,6 +51,7 @@ export interface ImportTarget {
   currency?: string;
   bankId?: number;
   label?: string;
+  accountNumber?: string;
 }
 
 // Output of the fast, synchronous validate-and-parse phase — small and fully
@@ -1033,7 +1034,7 @@ class TransactionService implements ITransactionService {
           userId,
           target.bankId ?? null,
           target.currency,
-          null,
+          target.accountNumber ?? null,
           target.label,
         );
         defaultCurrency = account.currency;

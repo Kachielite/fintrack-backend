@@ -19,6 +19,9 @@ export const CreateAccountSchema = z.object({
   currency: z.string().length(3),
   bank_id: z.number().int().positive().optional(),
   label: z.string().min(1).max(100).optional(),
+  // Distinguishes two accounts at the same bank in the same currency (e.g.
+  // checking + savings) — without it they'd dedupe into a single account.
+  account_number: z.string().min(1).max(50).optional(),
 });
 export type CreateAccountDTO = z.infer<typeof CreateAccountSchema>;
 
