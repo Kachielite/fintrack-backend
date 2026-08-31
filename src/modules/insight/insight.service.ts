@@ -431,7 +431,8 @@ class InsightService implements IInsightService {
 
   async canGenerateWeeklyReport(userId: number): Promise<boolean> {
     if (this.weeklyGenerationInProgress.has(userId)) return false;
-    const { start } = getCurrentWeekBounds(new Date());
+    const { start: currentWeekStart } = getCurrentWeekBounds(new Date());
+    const { start } = getPriorWeekBounds(currentWeekStart);
     const alreadyGenerated = await this.insightRepository.hasReportForPeriod(userId, 'weekly', start);
     return !alreadyGenerated;
   }
@@ -443,7 +444,11 @@ class InsightService implements IInsightService {
       if (!user) return;
 
       const now = new Date();
-      const { start: weekStart, end: weekEnd } = getCurrentWeekBounds(now);
+      // The report always covers the most recently *concluded* Mon-Sun week,
+      // never the in-progress one — a Monday-morning cron run would otherwise
+      // report on a week that just started and has no data yet.
+      const { start: currentWeekStart } = getCurrentWeekBounds(now);
+      const { start: weekStart, end: weekEnd } = getPriorWeekBounds(currentWeekStart);
       const alreadyGenerated = await this.insightRepository.hasReportForPeriod(userId, 'weekly', weekStart);
       if (alreadyGenerated) {
         logger.info(`Skipping insight generation for user ${userId} — already have this week's report`);
