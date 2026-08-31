@@ -15,7 +15,11 @@ export interface IAccountRepository {
   }): Promise<IAccount>;
   findAllByUser(userId: number): Promise<IAccount[]>;
   findById(id: number, userId: number): Promise<IAccount | null>;
-  update(id: number, userId: number, data: { label?: string; isActive?: boolean }): Promise<IAccount>;
+  update(
+    id: number,
+    userId: number,
+    data: { label?: string; isActive?: boolean; bankId?: number; accountNumberMask?: string },
+  ): Promise<IAccount>;
 }
 
 @injectable()
@@ -83,7 +87,11 @@ class AccountRepositoryImpl implements IAccountRepository {
     return (rows[0] as IAccount) ?? null;
   }
 
-  async update(id: number, userId: number, data: { label?: string; isActive?: boolean }): Promise<IAccount> {
+  async update(
+    id: number,
+    userId: number,
+    data: { label?: string; isActive?: boolean; bankId?: number; accountNumberMask?: string },
+  ): Promise<IAccount> {
     const updated = await this.db.client
       .update(AccountSchema)
       .set({ ...data, updatedAt: new Date() })

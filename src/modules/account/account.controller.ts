@@ -112,8 +112,15 @@ class AccountController extends BaseController {
    * /accounts/{id}:
    *   patch:
    *     tags: [Accounts]
-   *     summary: Rename, deactivate, or merge an account
-   *     description: Provide exactly one of label, is_active, or merge_into_account_id.
+   *     summary: Update account details, deactivate, or merge an account
+   *     description: >
+   *       Provide any combination of label, bank_id, and account_number to
+   *       edit those details (useful for filling in fields an
+   *       auto-created account never had, e.g. one created by email
+   *       ingestion before these fields existed here). merge_into_account_id
+   *       is handled on its own, moves every transaction into the target
+   *       account and deactivates this one, ignoring any other fields in the
+   *       same request.
    *     security:
    *       - bearerAuth: []
    *     parameters:
@@ -137,6 +144,12 @@ class AccountController extends BaseController {
    *               merge_into_account_id:
    *                 type: integer
    *                 example: 2
+   *               bank_id:
+   *                 type: integer
+   *                 example: 3
+   *               account_number:
+   *                 type: string
+   *                 example: "1234"
    *     responses:
    *       '200':
    *         description: Updated account
