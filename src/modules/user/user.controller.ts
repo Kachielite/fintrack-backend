@@ -158,12 +158,18 @@ class UserController extends BaseController {
    * /users/me:
    *   delete:
    *     tags: [Users]
-   *     summary: Delete account
+   *     summary: Schedule account deletion
+   *     description: >
+   *       Schedules the account for deletion rather than deleting it immediately.
+   *       The account and all its data remain intact for a 14-day grace period;
+   *       logging back in during that window (email/password, Google, or Apple)
+   *       reactivates the account automatically. After 14 days, a scheduled job
+   *       permanently and irreversibly deletes the account and all dependent data.
    *     security:
    *       - bearerAuth: []
    *     responses:
    *       '200':
-   *         description: Account deleted
+   *         description: Account scheduled for deletion
    *         content:
    *           application/json:
    *             schema:

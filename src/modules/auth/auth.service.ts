@@ -158,6 +158,16 @@ class AuthService implements IAuthService {
         throw new UnAuthorizedException('Refresh token has been invalidated');
       }
 
+      // A pending-deletion user's still-valid refresh token counts as "logging
+      // back in" within the grace period — reactivate silently. Unlike login(),
+      // this is a background token refresh, not a user-facing auth event, so we
+      // don't surface a `reactivated` flag here; the frontend only needs to know
+      // about reactivation when the user is actively signing in.
+      if (user.deletedAt) {
+        await this.userRepository.reactivate(user.id);
+        logger.info(`[Auth] Reactivated account for user ${user.id} via refresh token`);
+      }
+
       const accessToken = this.issueAccessToken(user.id, user.email);
       return { access_token: accessToken };
     } catch (error) {
@@ -227,6 +237,13 @@ class AuthService implements IAuthService {
   }
 
   private async issueTokensForUser(user: IUser): Promise<AuthResponseDTO> {
+    let reactivated = false;
+    if (user.deletedAt) {
+      await this.userRepository.reactivate(user.id);
+      reactivated = true;
+      logger.info(`[Auth] Reactivated account for user ${user.id} (login within 14-day grace period)`);
+    }
+
     const accessToken = this.issueAccessToken(user.id, user.email);
     const refreshToken = this.issueRefreshToken(user.id);
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
@@ -241,6 +258,7 @@ class AuthService implements IAuthService {
         first_name: user.firstName,
         onboarding_complete: user.onboardingComplete,
       },
+      ...(reactivated ? { reactivated: true } : {}),
     };
   }
 

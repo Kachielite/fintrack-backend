@@ -40,5 +40,6 @@ export const AuthResponseSchema = z.object({
     first_name: z.string(),
     onboarding_complete: z.boolean(),
   }),
+  reactivated: z.boolean().optional(),
 });
 export type AuthResponseDTO = z.infer<typeof AuthResponseSchema>;

@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNotNull, lt } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { UserSchema } from './user.schema';
 import { IUser, ICreateUser, IUpdateUser, ICompleteOnboarding } from './user.interface';
@@ -12,7 +12,10 @@ export interface IUserRepository {
   updateUser(id: number, data: Partial<IUpdateUser>): Promise<IUser>;
   completeOnboarding(id: number, data: ICompleteOnboarding): Promise<IUser>;
   updateRefreshTokenHash(id: number, hash: string | null): Promise<void>;
-  deleteUser(id: number): Promise<void>;
+  scheduleDeletion(id: number): Promise<void>;
+  reactivate(id: number): Promise<void>;
+  findPendingDeletionOlderThan(cutoff: Date): Promise<IUser[]>;
+  hardDeleteUser(id: number): Promise<void>;
 }
 
 @injectable()
@@ -95,7 +98,28 @@ class UserRepositoryImpl implements IUserRepository {
       .where(eq(UserSchema.id, id));
   }
 
-  async deleteUser(id: number): Promise<void> {
+  async scheduleDeletion(id: number): Promise<void> {
+    await this.db.client
+      .update(UserSchema)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(UserSchema.id, id));
+  }
+
+  async reactivate(id: number): Promise<void> {
+    await this.db.client
+      .update(UserSchema)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(eq(UserSchema.id, id));
+  }
+
+  async findPendingDeletionOlderThan(cutoff: Date): Promise<IUser[]> {
+    return (await this.db.client
+      .select()
+      .from(UserSchema)
+      .where(and(isNotNull(UserSchema.deletedAt), lt(UserSchema.deletedAt, cutoff)))) as IUser[];
+  }
+
+  async hardDeleteUser(id: number): Promise<void> {
     await this.db.client.delete(UserSchema).where(eq(UserSchema.id, id));
   }
 }
