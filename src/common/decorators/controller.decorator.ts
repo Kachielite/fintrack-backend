@@ -9,6 +9,8 @@ type HttpMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 interface RouteOptions {
   validate?: ZodSchema | { body?: ZodSchema; params?: ZodSchema; query?: ZodSchema };
   statusCode?: number;
+  /** Extra middleware to run before body validation — e.g. multer for a multipart route. */
+  middleware?: express.RequestHandler[];
 }
 
 interface RouteMetadata {
@@ -122,6 +124,7 @@ export class BaseController {
 
       this.router[route.method](
         route.path,
+        ...(route.options.middleware ?? []),
         middleware,
         async (req: Request, res: Response, next: NextFunction) => {
           try {

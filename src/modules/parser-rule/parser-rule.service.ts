@@ -70,6 +70,16 @@ export interface BulkReauditResult {
   errors: number;
 }
 
+export interface ExtractedStatementTransaction {
+  date: string;
+  merchant: string;
+  amount: number;
+  transactionType: 'debit' | 'credit';
+  currency: string | null;
+  reference: string | null;
+  balance: number | null;
+}
+
 export interface IParserRuleService {
   listProductionTemplates(): Promise<ParserTemplateResponseDTO[]>;
   getTemplate(id: number): Promise<IParserTemplateWithRules>;
@@ -106,6 +116,10 @@ export interface IParserRuleService {
     headers: string[],
     sampleRows: Record<string, string>[],
   ): Promise<CsvColumnMapping | null>;
+  extractTransactionsFromDocument(
+    text: string,
+    defaultCurrency: string,
+  ): Promise<ExtractedStatementTransaction[] | null>;
   captureBlueprint(
     bankId: number,
     transactionType: 'debit' | 'credit' | 'unknown',
@@ -897,6 +911,105 @@ Every column name in your response must exactly match one of the given headers, 
         throw new InternalServerException('OpenAI rate limit reached while analyzing CSV');
       }
       logger.error(`Error detecting CSV column mapping - ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Bank statement PDFs/Word docs rarely extract as clean tabular text, so
+   * unlike CSV/Excel (deterministic column-index parsing after one mapping
+   * call) this reads every transaction line directly out of the raw text in
+   * a single AI call. Returns null only on a hard failure (API/parse error);
+   * a document with no recognizable transactions returns an empty array.
+   */
+  async extractTransactionsFromDocument(
+    text: string,
+    defaultCurrency: string,
+  ): Promise<ExtractedStatementTransaction[] | null> {
+    try {
+      const trimmed = text.trim();
+      if (!trimmed) return [];
+
+      const response = await this.openai.chat.completions.create({
+        model: CONSTANTS.OPENAI_MODEL_EXTRACTION,
+        messages: [
+          {
+            role: 'system',
+            content: `You extract every individual transaction line from bank statement text that was already extracted from a PDF or Word document, so spacing/line breaks may be irregular or tables may have collapsed into run-on lines. Return JSON only.
+
+Rules:
+- Extract EVERY transaction line visible in the text — do not summarize, deduplicate, or skip any.
+- Never invent a transaction that isn't clearly present in the text.
+- If you can't confidently read a line's date or amount, omit that line rather than guessing.
+- Amounts are always positive numbers; sign is expressed separately via transaction_type.
+- Ignore statement headers/footers, running totals, page numbers, and marketing text — only real transaction lines.`,
+          },
+          {
+            role: 'user',
+            content: `Default currency (use only when a line doesn't show its own currency): ${defaultCurrency}
+
+Statement text:
+${trimmed.substring(0, 20000)}
+
+Return JSON in this exact format:
+{
+  "transactions": [
+    {
+      "date": "<ISO 8601 date or datetime, e.g. 2024-01-15>",
+      "merchant": "<description/narration/counterparty, cleaned up>",
+      "amount": <positive number, no currency symbols or commas>,
+      "transaction_type": "debit" | "credit",
+      "currency": "<ISO 4217 code if shown for this line, else null>",
+      "reference": "<transaction reference/ID if present, else null>",
+      "balance": <running balance after this line if shown, else null>
+    }
+  ]
+}
+
+If the text has no recognizable transactions, return { "transactions": [] }.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+      });
+
+      if (response.usage) {
+        this.aiUsageRepository.log({
+          operation: 'extract_statement_document',
+          promptTokens: response.usage.prompt_tokens,
+          completionTokens: response.usage.completion_tokens,
+          totalTokens: response.usage.total_tokens,
+          modelUsed: CONSTANTS.OPENAI_MODEL_EXTRACTION,
+        }).catch(() => null);
+      }
+
+      const raw = JSON.parse(response.choices[0].message.content || '{}');
+      if (!Array.isArray(raw.transactions)) return [];
+
+      const results: ExtractedStatementTransaction[] = [];
+      for (const item of raw.transactions) {
+        const amount = Number(item?.amount);
+        const date = typeof item?.date === 'string' ? item.date : '';
+        const merchant = typeof item?.merchant === 'string' ? item.merchant.trim() : '';
+        const transactionType = item?.transaction_type === 'credit' ? 'credit' : 'debit';
+        if (!date || !merchant || !isFinite(amount) || amount <= 0) continue;
+
+        results.push({
+          date,
+          merchant,
+          amount,
+          transactionType,
+          currency: typeof item?.currency === 'string' && item.currency.trim() ? item.currency.trim() : null,
+          reference: typeof item?.reference === 'string' && item.reference.trim() ? item.reference.trim() : null,
+          balance: item?.balance != null && isFinite(Number(item.balance)) ? Number(item.balance) : null,
+        });
+      }
+      return results;
+    } catch (error) {
+      if (this.isRateLimitError(error)) {
+        logger.warn('Rate-limited while extracting transactions from document text');
+        throw new InternalServerException('OpenAI rate limit reached while analyzing this document');
+      }
+      logger.error(`Error extracting transactions from document text - ${error}`);
       return null;
     }
   }
