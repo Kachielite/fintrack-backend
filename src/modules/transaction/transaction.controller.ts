@@ -324,32 +324,6 @@ class TransactionController extends BaseController {
 
   /**
    * @swagger
-   * /transactions/retention-status:
-   *   get:
-   *     tags: [Transactions]
-   *     summary: How much of the user's transaction history is at risk of being pruned
-   *     security:
-   *       - bearerAuth: []
-   *     responses:
-   *       '200':
-   *         description: Retention window and count of transactions past the cutoff
-   *         content:
-   *           application/json:
-   *             schema:
-   *               $ref: '#/components/schemas/RetentionStatus'
-   *       '401':
-   *         $ref: '#/components/responses/Unauthorized'
-   *       '500':
-   *         $ref: '#/components/responses/InternalServerError'
-   */
-  @Get('/retention-status')
-  async getRetentionStatus(req: Request) {
-    const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
-    return await this.service.getRetentionStatus(userId);
-  }
-
-  /**
-   * @swagger
    * /transactions/export:
    *   get:
    *     tags: [Transactions]

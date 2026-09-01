@@ -40,7 +40,6 @@ import CategoryController from '@/modules/category/category.controller';
 import IrisController from '@/modules/iris/iris.controller';
 import EmbeddingService from '@/modules/iris/embedding/embedding.service';
 import IngestionService from '@/modules/ingestion/ingestion.service';
-import TransactionService from '@/modules/transaction/transaction.service';
 import { IUserRepository } from '@/modules/user/user.repository';
 import logger from '@/common/lib/logger';
 
@@ -93,12 +92,6 @@ export async function configureContainer(): Promise<void> {
     await ingestionService.pollAllConnections();
   });
   logger.info(`GmailPollingScheduler started (every ${CONSTANTS.GMAIL_POLL_INTERVAL_MINUTES} minutes).`);
-
-  cron.schedule('0 2 * * *', async () => {
-    const transactionService = container.resolve(TransactionService);
-    await transactionService.pruneExpiredTransactions();
-  });
-  logger.info('TransactionPruningScheduler started (daily at 2:00 AM).');
 
   cron.schedule('45 2 * * *', async () => {
     const embeddingService = container.resolve(EmbeddingService);
