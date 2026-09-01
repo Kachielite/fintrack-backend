@@ -14,6 +14,7 @@ export enum RuleFieldEnum {
   DATE = 'date',
   BALANCE = 'balance',
   REFERENCE = 'reference',
+  ACCOUNT_NUMBER = 'account_number',
 }
 
 export enum RuleCreatorEnum {
