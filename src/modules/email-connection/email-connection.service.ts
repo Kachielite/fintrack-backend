@@ -15,7 +15,7 @@ import { IBudgetRepository } from '@/modules/budget/budget.repository';
 import { IInsightRepository } from '@/modules/insight/insight.repository';
 import AccountService, { IAccountService } from '@/modules/account/account.service';
 import { IUserRepository } from '@/modules/user/user.repository';
-import { getMaxEmailConnectionsForPlan } from '@/modules/user/user.constants';
+import { getMaxEmailConnectionsForPlan, FREE_TIER_RETENTION_MONTHS } from '@/modules/user/user.constants';
 import {
   GmailCallbackDTO,
   EmailConnectionResponseDTO,
@@ -39,6 +39,14 @@ const UNIVERSAL_FILTER_QUERY =
 
 const GMAIL_LABEL_NAME = 'Bank Transactions';
 const BACKFILL_MAX_MESSAGES = 500;
+
+// Every user starts on the free tier — bound the very first sync to the
+// free-tier visibility window (see user.constants.ts) so day-one ingestion
+// doesn't do wasted work (AI extraction, account creation, dedupe) on
+// history that sits invisible behind that same window. Appended only to
+// the one-time backfill searches below, never to the persistent Gmail
+// filter criteria, which must keep matching future emails indefinitely.
+const BACKFILL_QUERY_SUFFIX = ` newer_than:${FREE_TIER_RETENTION_MONTHS}m`;
 
 export class GmailAuthRevokedError extends Error {
   constructor(public readonly connectionId: number) {
@@ -318,7 +326,7 @@ class EmailConnectionService implements IEmailConnectionService {
           });
 
           // Backfill existing emails from this sender
-          const senderQuery = `from:${senderEmail}`;
+          const senderQuery = `from:${senderEmail}${BACKFILL_QUERY_SUFFIX}`;
           const searchRes = await gmail.users.messages.list({
             userId: 'me',
             q: senderQuery,
@@ -442,7 +450,7 @@ class EmailConnectionService implements IEmailConnectionService {
 
     const searchRes = await gmail.users.messages.list({
       userId: 'me',
-      q: UNIVERSAL_FILTER_QUERY,
+      q: `${UNIVERSAL_FILTER_QUERY}${BACKFILL_QUERY_SUFFIX}`,
       maxResults: BACKFILL_MAX_MESSAGES,
     });
 
