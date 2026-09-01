@@ -140,12 +140,23 @@ class IrisRepositoryImpl implements IIrisRepository {
     content: string;
     embedding: number[];
   }): Promise<void> {
-    await this.db.client.execute(
-      sql`INSERT INTO iris_embeddings (user_id, chunk_type, period, content, embedding, created_at, updated_at)
-          VALUES (${data.userId}, ${data.chunkType}, ${data.period}, ${data.content}, ${data.embedding}, now(), now())
-          ON CONFLICT (user_id, chunk_type, period)
-          DO UPDATE SET content = EXCLUDED.content, embedding = EXCLUDED.embedding, updated_at = now()`,
-    );
+    // Raw sql`` interpolates a JS array as multiple parenthesized params
+    // (e.g. for IN-clauses), not a Postgres array literal, which made this
+    // fail against the real[] column. The query builder serializes it
+    // correctly via the column's own type handler.
+    await this.db.client
+      .insert(IrisEmbeddingSchema)
+      .values({
+        userId: data.userId,
+        chunkType: data.chunkType,
+        period: data.period,
+        content: data.content,
+        embedding: data.embedding,
+      })
+      .onConflictDoUpdate({
+        target: [IrisEmbeddingSchema.userId, IrisEmbeddingSchema.chunkType, IrisEmbeddingSchema.period],
+        set: { content: data.content, embedding: data.embedding, updatedAt: new Date() },
+      });
   }
 
   async hasEmbeddings(userId: number): Promise<boolean> {

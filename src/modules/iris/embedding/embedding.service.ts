@@ -127,8 +127,9 @@ class EmbeddingService implements IEmbeddingService {
         });
       }
 
-      // Embed and upsert all chunks
-      await Promise.all(
+      // Embed and upsert each chunk independently so one bad chunk doesn't
+      // wipe out the rest of the user's rebuild.
+      const results = await Promise.allSettled(
         chunks.map(async (chunk) => {
           const embedding = await this.embed(chunk.content);
           await this.irisRepository.upsertEmbedding({
@@ -141,7 +142,19 @@ class EmbeddingService implements IEmbeddingService {
         }),
       );
 
-      logger.info(`Iris embeddings rebuilt for user ${userId} (${chunks.length} chunks).`);
+      const failures = results
+        .map((result, i) => ({ result, chunk: chunks[i] }))
+        .filter(({ result }) => result.status === 'rejected');
+      for (const { result, chunk } of failures) {
+        const reason = (result as PromiseRejectedResult).reason;
+        logger.error(
+          `Failed to embed Iris chunk for user ${userId} (${chunk.chunkType}/${chunk.period}) - ${reason}`,
+        );
+      }
+
+      logger.info(
+        `Iris embeddings rebuilt for user ${userId} (${chunks.length - failures.length}/${chunks.length} chunks).`,
+      );
     } catch (error) {
       logger.error(`Failed to rebuild Iris embeddings for user ${userId} - ${error}`);
     }
