@@ -514,7 +514,8 @@ Return JSON:
   "category": ${categorySlugs},
   "transaction_date": "<transaction datetime in ISO 8601 (YYYY-MM-DDTHH:mm:ss) when available; otherwise YYYY-MM-DD; null if not found>",
   "balance": <account balance number after transaction, or null>,
-  "reference": "<transaction reference/ID if present, else null>"
+  "reference": "<transaction reference/ID if present, else null>",
+  "account_number": "<masked/partial account number if present, e.g. digits after 'A/C' or 'account ending', else null>"
 }
 
 If this is not a transaction notification, return { "is_transaction": false }.`,
@@ -545,6 +546,7 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
       if (raw.transaction_date) result.date = raw.transaction_date;
       if (raw.balance != null) result.balance = Number(raw.balance);
       if (raw.reference) result.reference = raw.reference;
+      if (raw.account_number) result.accountNumberMask = raw.account_number;
       return result;
     } catch (error) {
       if (this.isRateLimitError(error)) {
@@ -596,6 +598,7 @@ Fields to extract:
 - transaction_date: the transaction date/time (e.g. "01 Jan 2025", "2025-01-01", compact forms like "01Sep2025")
 - balance: account balance after transaction
 - reference: transaction reference number
+- account_number: masked/partial account number if present (e.g. digits after "A/C" or "account ending")
 
 Return JSON:
 {
@@ -1171,6 +1174,10 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
   ): void {
     if (field === RuleFieldEnum.TRANSACTION_TYPE) {
       result.transactionType = String(value);
+      return;
+    }
+    if (field === RuleFieldEnum.ACCOUNT_NUMBER) {
+      result.accountNumberMask = String(value);
       return;
     }
     (result as any)[field] = value;

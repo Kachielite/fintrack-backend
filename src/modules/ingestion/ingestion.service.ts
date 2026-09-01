@@ -621,7 +621,12 @@ class IngestionService implements IIngestionService {
           user.refCurrency,
         );
 
-        const account = await this.accountService.resolveOrCreate(userId, bank.id, currency);
+        const account = await this.accountService.resolveOrCreate(
+          userId,
+          bank.id,
+          currency,
+          regexResult.accountNumberMask,
+        );
 
         const transaction = await this.transactionRepository.create({
           userId,
@@ -769,7 +774,12 @@ class IngestionService implements IIngestionService {
 
       const exchangeRate = await this.exchangeRateService.getRate(extractedCurrency, user.refCurrency);
 
-      const account = await this.accountService.resolveOrCreate(userId, bank.id, extractedCurrency);
+      const account = await this.accountService.resolveOrCreate(
+        userId,
+        bank.id,
+        extractedCurrency,
+        extractedOrFallback.accountNumberMask,
+      );
 
       const transaction = await this.transactionRepository.create({
         userId,
@@ -859,6 +869,7 @@ class IngestionService implements IIngestionService {
     date?: string;
     balance?: number;
     reference?: string;
+    accountNumberMask?: string;
   } | null {
     const combined = `${subject}\n${body}`;
 

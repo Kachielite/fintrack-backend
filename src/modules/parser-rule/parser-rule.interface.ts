@@ -63,6 +63,7 @@ export interface ParsedTransaction {
   date?: string;
   balance?: number;
   reference?: string;
+  accountNumberMask?: string;
 }
 
 export interface TemplateParseResult {
