@@ -1,4 +1,4 @@
-import { integer, json, pgTable, real, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { integer, json, pgTable, real, serial, text, timestamp, unique } from 'drizzle-orm/pg-core';
 import { UserSchema } from '@/modules/user/user.schema';
 
 export const IrisSessionSchema = pgTable('iris_sessions', {
@@ -22,15 +22,19 @@ export const IrisMessageSchema = pgTable('iris_messages', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-export const IrisEmbeddingSchema = pgTable('iris_embeddings', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id')
-    .references(() => UserSchema.id, { onDelete: 'cascade' })
-    .notNull(),
-  chunkType: text('chunk_type').notNull(),
-  period: text('period').notNull(),
-  content: text('content').notNull(),
-  embedding: real('embedding').array().notNull().default([]),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+export const IrisEmbeddingSchema = pgTable(
+  'iris_embeddings',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .references(() => UserSchema.id, { onDelete: 'cascade' })
+      .notNull(),
+    chunkType: text('chunk_type').notNull(),
+    period: text('period').notNull(),
+    content: text('content').notNull(),
+    embedding: real('embedding').array().notNull().default([]),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => [unique('iris_embeddings_user_chunk_period_unique').on(table.userId, table.chunkType, table.period)],
+);
