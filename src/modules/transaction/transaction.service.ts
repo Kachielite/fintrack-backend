@@ -83,10 +83,6 @@ interface TransactionCandidate {
   balance?: number;
 }
 
-// Extra buffer between a transaction crossing the retention cutoff and it
-// actually being deleted, so the warning notification always has real lead time.
-const RETENTION_WARNING_GRACE_DAYS = 14;
-
 export interface ITransactionService {
   listTransactions(userId: number, query: TransactionQueryDTO): Promise<IPagination<ITransaction>>;
   getSummary(
@@ -109,15 +105,9 @@ export interface ITransactionService {
   getSimilarTransactions(id: number, userId: number): Promise<ITransaction[]>;
   bulkCorrectCategory(userId: number, data: BulkCategoryDTO): Promise<{ updated: number }>;
   getUnverified(userId: number): Promise<ITransaction[]>;
-  pruneExpiredTransactions(): Promise<void>;
   markTransfer(userId: number, id: number, linkedTransactionId?: number, remember?: boolean): Promise<ITransaction>;
   unmarkTransfer(userId: number, id: number, remember?: boolean): Promise<ITransaction>;
   getLinkedTransaction(userId: number, id: number): Promise<ITransaction | null>;
-  getRetentionStatus(userId: number): Promise<{
-    retentionMonths: number;
-    transactionsAtRisk: number;
-    cutoffDate: string;
-  }>;
   exportTransactionsCsv(userId: number): Promise<string>;
   createManualTransaction(userId: number, data: CreateManualTransactionDTO): Promise<ITransaction>;
   /**
@@ -151,12 +141,29 @@ class TransactionService implements ITransactionService {
     @inject('IBankRepository') private bankRepository: IBankRepository,
   ) {}
 
+  /**
+   * How far back a user's plan lets them query, as an absolute cutoff date.
+   * `null` means unlimited (paid tier). Nothing is ever deleted for
+   * retention reasons — this only bounds what query results can surface.
+   */
+  private async getRetentionCutoffDate(userId: number): Promise<Date | null> {
+    const user = await this.userRepository.findById(userId);
+    const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
+    if (retentionMonths == null) return null;
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - retentionMonths);
+    return cutoff;
+  }
+
   async listTransactions(
     userId: number,
     query: TransactionQueryDTO,
   ): Promise<IPagination<ITransaction>> {
     try {
       logger.info(`[Transaction] Listing transactions for user ${userId}`);
+      const cutoff = await this.getRetentionCutoffDate(userId);
+      const requestedFrom = query.date_from ? new Date(query.date_from) : undefined;
+      const dateFrom = cutoff && (!requestedFrom || requestedFrom < cutoff) ? cutoff : requestedFrom;
       return await this.transactionRepository.findAll({
         userId,
         page: query.page,
@@ -165,7 +172,7 @@ class TransactionService implements ITransactionService {
         currency: query.currency,
         bankId: query.bank_id,
         status: query.status,
-        dateFrom: query.date_from ? new Date(query.date_from) : undefined,
+        dateFrom,
         dateTo: query.date_to ? new Date(query.date_to) : undefined,
         search: query.search,
         excludeFromTotals: query.exclude_from_totals,
@@ -187,12 +194,18 @@ class TransactionService implements ITransactionService {
       const y = year || now.getFullYear();
       const m = month !== undefined ? month : now.getMonth() + 1;
 
-      const from = new Date(y, m - 1, 1);
+      let from = new Date(y, m - 1, 1);
       const to = new Date(y, m, 0, 23, 59, 59);
 
       // Fetch the last 3 months worth of data for the rolling average comparison
-      const threeMonthsFrom = new Date(y, m - 4, 1);
+      let threeMonthsFrom = new Date(y, m - 4, 1);
       const threeMonthsTo = new Date(y, m - 1, 0, 23, 59, 59);
+
+      const cutoff = await this.getRetentionCutoffDate(userId);
+      if (cutoff) {
+        if (from < cutoff) from = cutoff;
+        if (threeMonthsFrom < cutoff) threeMonthsFrom = cutoff;
+      }
 
       const [transactions, prevTransactions] = await Promise.all([
         this.transactionRepository.findForSummary(userId, from, to),
@@ -286,15 +299,17 @@ class TransactionService implements ITransactionService {
       if (period === '3m') months = 3;
       else if (period === '6m') months = 6;
 
-      const from = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
-      const to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
-      // Trend window can't outrun what the user's plan actually retains —
-      // a free-tier user with a 2-month window would otherwise see 4 blank
-      // months on a chart that implies 6 months of history.
+      // Neither the requested period nor the trend line can outrun what the
+      // user's plan actually retains — a free-tier user with a 2-month
+      // window would otherwise get full 6-month aggregates via period=6m,
+      // or 4 blank months on a trend chart that implies 6 months of history.
       const user = await this.userRepository.findById(userId);
       const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
-      const trendMonths = Math.min(6, retentionMonths);
+      const effectiveMonths = retentionMonths == null ? months : Math.min(months, retentionMonths);
+      const trendMonths = retentionMonths == null ? 6 : Math.min(6, retentionMonths);
+
+      const from = new Date(now.getFullYear(), now.getMonth() - (effectiveMonths - 1), 1);
+      const to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
       const trendFrom = new Date(now.getFullYear(), now.getMonth() - (trendMonths - 1), 1);
       const trendTo = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
@@ -433,14 +448,17 @@ class TransactionService implements ITransactionService {
       const y = year || now.getFullYear();
       const m = month !== undefined ? month : now.getMonth() + 1;
 
-      const from = new Date(y, m - 1, 1);
+      let from = new Date(y, m - 1, 1);
       const to = new Date(y, m, 0, 23, 59, 59);
 
       logger.info(`[Transaction] Getting daily spend for user ${userId} (year=${y}, month=${m})`);
-      const [user, transactions] = await Promise.all([
+      const [user, cutoff] = await Promise.all([
         this.userRepository.findById(userId),
-        this.transactionRepository.findForSummary(userId, from, to),
+        this.getRetentionCutoffDate(userId),
       ]);
+      if (cutoff && from < cutoff) from = cutoff;
+
+      const transactions = await this.transactionRepository.findForSummary(userId, from, to);
       const refCurrency = user?.refCurrency ?? 'NGN';
 
       return await this.aggregateDailySpend(transactions, refCurrency);
@@ -603,76 +621,6 @@ class TransactionService implements ITransactionService {
     } catch (error) {
       logger.error(`Error fetching unverified transactions for user ${userId} - ${error}`);
       throw new InternalServerException('Failed to fetch unverified transactions');
-    }
-  }
-
-  async pruneExpiredTransactions(): Promise<void> {
-    try {
-      logger.info('Starting transaction pruning job');
-      const allUsers = await this.userRepository.findAll?.() || [];
-      for (const user of allUsers) {
-        const retentionMonths = getRetentionMonthsForPlan(user.planTier);
-        const cutoff = new Date();
-        cutoff.setMonth(cutoff.getMonth() - retentionMonths);
-
-        // Data only becomes eligible for deletion once it's past the cutoff
-        // AND past this extra grace window — guaranteeing real lead time
-        // between a user seeing the "data at risk" warning and it being gone,
-        // rather than pruning silently the moment the cutoff is crossed.
-        const graceCutoff = new Date(cutoff);
-        graceCutoff.setDate(graceCutoff.getDate() - RETENTION_WARNING_GRACE_DAYS);
-
-        await this.warnIfApproachingRetentionCutoff(user, cutoff);
-        await this.transactionRepository.deleteOlderThan(user.id, graceCutoff);
-      }
-      logger.info('Transaction pruning completed');
-    } catch (error) {
-      logger.error(`Error pruning transactions - ${error}`);
-    }
-  }
-
-  private async warnIfApproachingRetentionCutoff(user: IUser, cutoff: Date): Promise<void> {
-    try {
-      const atRisk = await this.transactionRepository.countOlderThan(user.id, cutoff);
-      if (atRisk === 0) return;
-
-      // Dedupe: don't re-warn if we already sent one within the grace window.
-      const recentNotifications = await this.notificationService.list(user.id);
-      const warnedRecently = recentNotifications.some((n) => {
-        if (n.type !== 'retention_warning') return false;
-        const ageMs = Date.now() - new Date(n.createdAt).getTime();
-        return ageMs < RETENTION_WARNING_GRACE_DAYS * 24 * 60 * 60 * 1000;
-      });
-      if (warnedRecently) return;
-
-      const retentionMonths = getRetentionMonthsForPlan(user.planTier);
-      await this.notificationService.create({
-        userId: user.id,
-        type: 'retention_warning',
-        title: 'Older transactions will be removed soon',
-        body: `You have ${atRisk} transaction${atRisk === 1 ? '' : 's'} older than your ${retentionMonths}-month retention window. Export your data if you want to keep it — they'll be deleted in about ${RETENTION_WARNING_GRACE_DAYS} days.`,
-        data: { transactionsAtRisk: atRisk, retentionMonths, cutoffDate: cutoff.toISOString() },
-      });
-    } catch (error) {
-      logger.warn(`[Transaction] Retention warning check failed for user ${user.id}: ${error}`);
-    }
-  }
-
-  async getRetentionStatus(userId: number): Promise<{
-    retentionMonths: number;
-    transactionsAtRisk: number;
-    cutoffDate: string;
-  }> {
-    try {
-      const user = await this.userRepository.findById(userId);
-      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
-      const cutoff = new Date();
-      cutoff.setMonth(cutoff.getMonth() - retentionMonths);
-      const transactionsAtRisk = await this.transactionRepository.countOlderThan(userId, cutoff);
-      return { retentionMonths, transactionsAtRisk, cutoffDate: cutoff.toISOString() };
-    } catch (error) {
-      logger.error(`Error getting retention status for user ${userId} - ${error}`);
-      throw new InternalServerException('Failed to get retention status');
     }
   }
 

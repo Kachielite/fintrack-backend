@@ -259,7 +259,10 @@ class BudgetService implements IBudgetService {
     try {
       logger.info(`[Budget] Auto-generating budgets for user ${userId}`);
       const user = await this.userRepository.findById(userId);
-      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free');
+      // Auto-budget training window: bounded by the user's retention window
+      // when it exists, otherwise a fixed 24 months — training suggestions
+      // on truly unlimited history isn't useful even for paid users.
+      const retentionMonths = getRetentionMonthsForPlan(user?.planTier ?? 'free') ?? 24;
       const currency = user?.refCurrency ?? 'NGN';
 
       const activeBudgets = await this.budgetRepository.findAllActive(userId);

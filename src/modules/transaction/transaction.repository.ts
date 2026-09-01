@@ -14,8 +14,6 @@ export interface ITransactionRepository {
   findUnverified(userId: number): Promise<ITransaction[]>;
   update(id: number, userId: number, data: Partial<ITransaction>): Promise<ITransaction>;
   delete(id: number, userId: number): Promise<void>;
-  deleteOlderThan(userId: number, cutoffDate: Date): Promise<void>;
-  countOlderThan(userId: number, cutoffDate: Date): Promise<number>;
   countByCategory(userId: number, category: string): Promise<number>;
   countByAccount(userId: number, accountId: number): Promise<number>;
   findAllForExport(userId: number): Promise<ITransaction[]>;
@@ -224,30 +222,6 @@ class TransactionRepositoryImpl implements ITransactionRepository {
     await this.db.client
       .delete(TransactionSchema)
       .where(and(eq(TransactionSchema.id, id), eq(TransactionSchema.userId, userId)));
-  }
-
-  async deleteOlderThan(userId: number, cutoffDate: Date): Promise<void> {
-    await this.db.client
-      .delete(TransactionSchema)
-      .where(
-        and(
-          eq(TransactionSchema.userId, userId),
-          lte(TransactionSchema.transactionDate, cutoffDate),
-        ),
-      );
-  }
-
-  async countOlderThan(userId: number, cutoffDate: Date): Promise<number> {
-    const [row] = await this.db.client
-      .select({ count: count() })
-      .from(TransactionSchema)
-      .where(
-        and(
-          eq(TransactionSchema.userId, userId),
-          lte(TransactionSchema.transactionDate, cutoffDate),
-        ),
-      );
-    return Number(row?.count ?? 0);
   }
 
   async countByCategory(userId: number, category: string): Promise<number> {

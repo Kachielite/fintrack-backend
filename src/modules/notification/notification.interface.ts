@@ -6,7 +6,6 @@ export type NotificationType =
   | 'budget_warning'
   | 'budget_exceeded'
   | 'iris_ready'
-  | 'retention_warning'
   | 'transfer_scan_complete'
   | 'transfer_scan_failed'
   | 'import_complete'
