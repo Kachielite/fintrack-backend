@@ -63,7 +63,10 @@ class AuthService implements IAuthService {
         termsAccepted: data.terms_accepted,
       });
     } catch (error) {
-      if (error instanceof BadRequestException) throw error;
+      if (error instanceof BadRequestException) {
+        logger.warn(`Google auth rejected - ${error.message}`);
+        throw error;
+      }
       logger.error(`Google auth error - ${error}`);
       throw new InternalServerException('Google authentication failed');
     }
@@ -83,7 +86,10 @@ class AuthService implements IAuthService {
         termsAccepted: data.terms_accepted,
       });
     } catch (error) {
-      if (error instanceof BadRequestException) throw error;
+      if (error instanceof BadRequestException) {
+        logger.warn(`Apple auth rejected - ${error.message}`);
+        throw error;
+      }
       logger.error(`Apple auth error - ${error}`);
       throw new InternalServerException('Apple authentication failed');
     }
