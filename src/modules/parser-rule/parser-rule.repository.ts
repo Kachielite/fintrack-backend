@@ -19,6 +19,16 @@ export interface IParserRuleRepository {
   createTemplate(data: Partial<IParserTemplate>): Promise<IParserTemplate>;
   createRule(data: Partial<IParserRule>): Promise<IParserRule>;
   linkRuleToTemplate(templateId: number, ruleId: number): Promise<void>;
+  /**
+   * Any row at all for this bank, regardless of status — used to decide whether
+   * automatic template generation should fire again. A bank that already has a
+   * candidate/audited/production/failed_audit template has already had its one
+   * automatic generation attempt; a burst of further same-bank emails shouldn't
+   * each mint their own near-duplicate template. Deliberately not scoped to
+   * "pending" statuses only — a failed_audit result should also stop further
+   * auto-generation, not just prompt an immediate retry (see fintrack-backend#140).
+   */
+  hasAnyTemplateForBank(bankId: number): Promise<boolean>;
   findProductionTemplatesByBank(bankId: number): Promise<IParserTemplateWithRules[]>;
   findTemplateById(id: number): Promise<IParserTemplateWithRules | null>;
   findAllTemplates(): Promise<IParserTemplate[]>;
@@ -67,6 +77,15 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
 
   async linkRuleToTemplate(templateId: number, ruleId: number): Promise<void> {
     await this.db.client.insert(TemplateRuleSchema).values({ templateId, ruleId });
+  }
+
+  async hasAnyTemplateForBank(bankId: number): Promise<boolean> {
+    const rows = await this.db.client
+      .select({ id: ParserTemplateSchema.id })
+      .from(ParserTemplateSchema)
+      .where(eq(ParserTemplateSchema.bankId, bankId))
+      .limit(1);
+    return rows.length > 0;
   }
 
   async findProductionTemplatesByBank(bankId: number): Promise<IParserTemplateWithRules[]> {
