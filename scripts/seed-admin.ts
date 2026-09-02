@@ -10,22 +10,22 @@ if (!DEFAULT_ADMIN_EMAIL || !DEFAULT_ADMIN_PASSWORD) {
   process.exit(1);
 }
 
-async function seed() {
+async function seed(email: string, password: string) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
-  const hash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 12);
+  const hash = await bcrypt.hash(password, 12);
   await pool.query(
     `INSERT INTO admin_users (email, password_hash, is_active, created_at, updated_at)
      VALUES ($1, $2, true, NOW(), NOW())
      ON CONFLICT (email) DO NOTHING`,
-    [DEFAULT_ADMIN_EMAIL, hash],
+    [email, hash],
   );
 
-  console.log(`Default admin seeded: ${DEFAULT_ADMIN_EMAIL}`);
+  console.log(`Default admin seeded: ${email}`);
   await pool.end();
 }
 
-seed().catch((err) => {
+seed(DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD).catch((err) => {
   console.error(err);
   process.exit(1);
 });

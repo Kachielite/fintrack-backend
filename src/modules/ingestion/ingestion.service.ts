@@ -6,6 +6,7 @@ import { IIngestionRepository } from './ingestion.repository';
 import { IEmailConnectionRepository } from '@/modules/email-connection/email-connection.repository';
 import { IBankRepository } from '@/modules/bank/bank.repository';
 import { IParserRuleService, IdentifiedBank } from '@/modules/parser-rule/parser-rule.service';
+import { RateLimitedExtractionError, ParsedTransaction } from '@/modules/parser-rule/parser-rule.interface';
 import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { IUserRepository } from '@/modules/user/user.repository';
@@ -511,11 +512,7 @@ class IngestionService implements IIngestionService {
             logger.warn(
               `[Bank] identifyBank rate-limited for ${senderEmail}; deferring, messageId=${messageId}`,
             );
-            await this.ingestionRepository.markProcessed({
-              emailConnectionId: connectionId,
-              gmailMessageId: messageId,
-              outcome: 'non_transaction',
-            });
+            await this.ingestionRepository.markRetryable(connectionId, messageId);
             return null;
           }
           throw err;
@@ -737,16 +734,32 @@ class IngestionService implements IIngestionService {
       }
 
       // No production regex template yet — extract directly with AI
-      const extracted = await this.parserRuleService.extractTransaction(
-        bank.name,
-        emailBody,
-        emailSubject,
-        dbCategories,
-      );
+      let extracted: ParsedTransaction | null;
+      let extractionWasRateLimited = false;
+      try {
+        extracted = await this.parserRuleService.extractTransaction(
+          bank.name,
+          emailBody,
+          emailSubject,
+          dbCategories,
+        );
+      } catch (err) {
+        if (err instanceof RateLimitedExtractionError) {
+          extracted = null;
+          extractionWasRateLimited = true;
+        } else {
+          throw err;
+        }
+      }
 
       const extractedOrFallback = extracted || this.extractStructuredFallback(emailBody, emailSubject);
 
       if (!extractedOrFallback) {
+        if (extractionWasRateLimited) {
+          logger.warn(`Rate-limited extraction for ${bank.name}, messageId=${messageId} — deferring for retry`);
+          await this.ingestionRepository.markRetryable(connectionId, messageId);
+          return null;
+        }
         logger.info(`AI extraction returned non-transaction for ${bank.name}, messageId=${messageId}`);
         try {
           await this.parserRuleService.captureBlueprint(bank.id, 'unknown', emailSubject, emailBody, true);
@@ -1168,12 +1181,16 @@ class IngestionService implements IIngestionService {
     subject: string,
     categories: ICategory[],
   ): Promise<{ merchant: string; category?: string } | null> {
-    const extracted = await this.parserRuleService.extractTransaction(
-      bankName,
-      body,
-      subject,
-      categories,
-    );
+    // This only enhances a merchant name on an already-successful regex match —
+    // the transaction itself isn't at stake here, so a rate limit just means
+    // "skip the repair," not "retry the whole message."
+    let extracted: ParsedTransaction | null;
+    try {
+      extracted = await this.parserRuleService.extractTransaction(bankName, body, subject, categories);
+    } catch (err) {
+      if (err instanceof RateLimitedExtractionError) return null;
+      throw err;
+    }
     if (!extracted) return null;
 
     const repairedMerchant = this.resolveMerchant(
@@ -1534,8 +1551,21 @@ class IngestionService implements IIngestionService {
     this.templateGenerationInFlight.add(bankId);
     setImmediate(() => {
       this.parserRuleService
-        .generateTemplate(bankId, emailBody, emailSubject)
-        .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence))
+        .hasExistingTemplate(bankId)
+        .then((exists) => {
+          if (exists) {
+            // A prior attempt already created a template for this bank (candidate,
+            // audited, production, or failed_audit) — a burst of further same-bank
+            // emails during a backfill shouldn't each mint their own near-duplicate
+            // template. Manual regeneration (e.g. the admin "Generate" action) can
+            // still create a new one intentionally; this only guards the automatic
+            // per-email trigger. See fintrack-backend#140.
+            return null;
+          }
+          return this.parserRuleService
+            .generateTemplate(bankId, emailBody, emailSubject)
+            .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence));
+        })
         .then(() => {
           this.templateGenerationCooldownUntil.delete(bankId);
         })
