@@ -67,11 +67,16 @@ export interface ImportTarget {
 // (userId, bankId, currency) dedupe converge back onto that same target
 // account for every currency-less row, without threading accountId through
 // each row by hand.
+// pdf/docx carry the raw extracted document text, not yet AI-parsed into
+// transactions — that AI call moved into the background phase (see
+// fintrack-backend#143: it was the actual slow part of "prepare", running a
+// single extraction call over the whole document, which could take well
+// over the client's request timeout for a real multi-page statement).
 export type PreparedImport =
   | { format: 'csv'; records: Record<string, string>[]; mapping: CsvColumnMapping; defaultCurrency?: string; defaultBankId?: number | null }
   | { format: 'xlsx'; records: Record<string, string>[]; mapping: CsvColumnMapping; defaultCurrency?: string; defaultBankId?: number | null }
-  | { format: 'pdf'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null }
-  | { format: 'docx'; extracted: ExtractedStatementTransaction[]; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null };
+  | { format: 'pdf'; text: string; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null }
+  | { format: 'docx'; text: string; bankId: number | undefined; defaultCurrency?: string; defaultBankId?: number | null };
 
 interface TransactionCandidate {
   merchant: string;
@@ -1020,23 +1025,19 @@ class TransactionService implements ITransactionService {
         return { format, records, mapping, defaultCurrency, defaultBankId };
       }
 
+      // Extracting raw text from the PDF/Word buffer is fast, local parsing —
+      // stays in this synchronous phase along with bank detection (a plain
+      // substring match, also fast/local). The actual AI extraction pass over
+      // that text is the slow part and runs later, in processPreparedImport.
       const text = format === 'pdf' ? await this.extractPdfText(file.buffer) : await this.extractDocxText(file.buffer);
-      const bankId = await this.detectBankIdFromText(text);
-
-      const extracted: ExtractedStatementTransaction[] | null = await this.parserRuleService.extractTransactionsFromDocument(
-        text,
-        defaultCurrency ?? user.refCurrency,
-      );
-      if (extracted === null) {
-        throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
-      }
-      if (extracted.length === 0) {
+      if (!text.trim()) {
         throw new BadRequestException(
-          "Couldn't find any transactions in this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
+          "Couldn't read any text from this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
         );
       }
+      const bankId = await this.detectBankIdFromText(text);
 
-      return { format, extracted, bankId, defaultCurrency, defaultBankId };
+      return { format, text, bankId, defaultCurrency, defaultBankId };
     } catch (error) {
       if (error instanceof BadRequestException || error instanceof ResourceNotFoundException) throw error;
       logger.error(`Error preparing statement import for user ${userId} - ${error}`);
@@ -1173,7 +1174,20 @@ class TransactionService implements ITransactionService {
         }
       }
     } else {
-      const { extracted, bankId, defaultCurrency, defaultBankId } = prepared;
+      const { text, bankId, defaultCurrency, defaultBankId } = prepared;
+      const extracted: ExtractedStatementTransaction[] | null = await this.parserRuleService.extractTransactionsFromDocument(
+        text,
+        defaultCurrency ?? user.refCurrency,
+      );
+      if (extracted === null) {
+        throw new BadRequestException('Could not analyze this document — please try again or use a different format.');
+      }
+      if (extracted.length === 0) {
+        throw new BadRequestException(
+          "Couldn't find any transactions in this document. If this is a scanned or image-only PDF, try exporting a text-based statement, or use CSV/Excel/Word instead.",
+        );
+      }
+
       for (let i = 0; i < extracted.length; i++) {
         const itemNumber = i + 1;
         const item = extracted[i];
@@ -1252,11 +1266,21 @@ class TransactionService implements ITransactionService {
     } catch (error) {
       logger.error(`[Transaction] Background import failed for user ${userId} - ${error}`);
       try {
+        // A BadRequestException here (e.g. "couldn't find any transactions in
+        // this document") carries a specific, actionable message worth
+        // surfacing as-is — these validation checks used to run synchronously
+        // and return this same message inline; now that document AI
+        // extraction runs in the background too (fintrack-backend#143), this
+        // is where that message has to be preserved instead of falling back
+        // to the generic one.
+        const body = error instanceof BadRequestException
+          ? error.message
+          : 'Something went wrong while importing your statement. Please try again.';
         await this.notificationService.create({
           userId,
           type: 'import_failed',
           title: 'Import failed',
-          body: 'Something went wrong while importing your statement. Please try again.',
+          body,
           data: {},
         });
       } catch (notifyError) {
