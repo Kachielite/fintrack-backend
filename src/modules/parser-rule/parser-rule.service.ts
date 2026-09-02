@@ -142,6 +142,11 @@ export interface IParserRuleService {
 const BLUEPRINT_BODY_MAX_LEN = 3000;
 const BLUEPRINT_SUBJECT_MAX_LEN = 240;
 const BLUEPRINT_DRIFT_REPLACE_THRESHOLD = 2;
+// Don't demote a template back to candidate off early noise — one failure right
+// after one success computes to a score of 1/3, well under REGEX_REAUDIT_THRESHOLD.
+// Require a minimum number of real applications before the score is trusted enough
+// to act on. See fintrack-backend#154.
+const REGEX_DEMOTION_MIN_SAMPLES = 5;
 
 @injectable()
 class ParserRuleService implements IParserRuleService {
@@ -1118,8 +1123,9 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
       await this.repository.updateTemplateConfidence(templateId, template.matchCount, newFailCount);
       await this.repository.updateTemplateLastFailed(templateId);
 
+      const totalSamples = template.matchCount + newFailCount;
       const newScore = template.matchCount / (template.matchCount + newFailCount * 2) || 0;
-      if (newScore < CONSTANTS.REGEX_REAUDIT_THRESHOLD) {
+      if (totalSamples >= REGEX_DEMOTION_MIN_SAMPLES && newScore < CONSTANTS.REGEX_REAUDIT_THRESHOLD) {
         await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.CANDIDATE, 'Score fell below reaudit threshold');
       }
     } catch (error) {

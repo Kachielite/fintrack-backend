@@ -83,7 +83,11 @@ export const CONSTANTS = {
 
   GMAIL_POLL_INTERVAL_MINUTES: parseInt(process.env.GMAIL_POLL_INTERVAL_MINUTES || '15', 10),
 
-  REGEX_PRODUCTION_THRESHOLD: parseFloat(process.env.REGEX_PRODUCTION_THRESHOLD || '0.85'),
+  // Templates reach 'production' by passing a real audit (blueprint-match
+  // evidence or an AI judge) — that's the eligibility check for use. This
+  // threshold only gates *demotion* back to candidate once real usage data
+  // exists (parser-rule.service.ts's recordFailure) — see fintrack-backend#154
+  // for why a separate confidence-based usage gate was removed.
   REGEX_REAUDIT_THRESHOLD: parseFloat(process.env.REGEX_REAUDIT_THRESHOLD || '0.60'),
 
   FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'http://localhost:3001',
