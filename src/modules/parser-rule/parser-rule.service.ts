@@ -11,6 +11,7 @@ import {
   ParsedTransaction,
   TemplateParseResult,
   AuditResult,
+  RateLimitedExtractionError,
 } from './parser-rule.interface';
 import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
@@ -91,6 +92,11 @@ export interface IParserRuleService {
     emailBody: string,
     emailSubject: string,
   ): Promise<TemplateParseResult | null>;
+  /**
+   * Returns null when the AI genuinely judged the email not to be a
+   * transaction. Throws RateLimitedExtractionError when the OpenAI call
+   * itself was rate-limited — callers must not collapse the two cases.
+   */
   extractTransaction(
     bankName: string,
     emailBody: string,
@@ -551,7 +557,7 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
     } catch (error) {
       if (this.isRateLimitError(error)) {
         logger.warn(`Rate-limited while extracting transaction for bank ${bankName}`);
-        return null;
+        throw new RateLimitedExtractionError(`Rate-limited while extracting transaction for bank ${bankName}`);
       }
       logger.error(`Error extracting transaction for bank ${bankName} - ${error}`);
       return null;
