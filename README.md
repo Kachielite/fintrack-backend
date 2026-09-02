@@ -83,8 +83,8 @@ TOKEN_ENCRYPTION_KEY=<32-byte-hex>
 # Gmail polling interval
 GMAIL_POLL_INTERVAL_MINUTES=15            # default: 15
 
-# Regex engine thresholds
-REGEX_PRODUCTION_THRESHOLD=0.85           # default: 0.85
+# Regex engine threshold — demotes a production template back to candidate
+# once real usage data shows its live confidence has fallen below this
 REGEX_REAUDIT_THRESHOLD=0.60             # default: 0.60
 ```
 
@@ -163,7 +163,7 @@ Controllers extend `BaseController` and use method decorators (`@Get`, `@Post`, 
 1. Gmail is polled every `GMAIL_POLL_INTERVAL_MINUTES` minutes for each connected account.
 2. Emails are matched against production regex templates for the sender's bank (**regex-first**).
 3. If no template matches, GPT-4o parses the email and generates a new candidate template (**AI-fallback**).
-4. AI-generated templates are automatically audited by GPT-4o and promoted to production when confidence ≥ `REGEX_PRODUCTION_THRESHOLD`.
+4. AI-generated templates are automatically audited — either against real evidence from captured email blueprints, or by GPT-4o as a judge — and promoted to production on passing. A template's confidence then builds from real usage and can demote it back to candidate if it falls below `REGEX_REAUDIT_THRESHOLD`.
 5. Every OpenAI call is logged to `ai_usage_logs` for cost tracking.
 
 ### Scheduled jobs

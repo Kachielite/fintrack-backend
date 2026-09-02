@@ -589,12 +589,14 @@ class IngestionService implements IIngestionService {
         emailSubject,
       );
 
+      // status === 'production' (enforced by findProductionTemplatesByBank inside
+      // applyTemplate) is already the real, evidence-based check — auditTemplate
+      // only promotes a template after either concrete blueprint-match evidence or
+      // an AI judge's review. confidenceScore is downstream telemetry fed by real
+      // usage below (recordMatch/recordFailure), not a second gate on top of that
+      // — it can never rise off its 0 default if usage is gated behind it first.
+      // See fintrack-backend#154.
       if (templateResult && Object.keys(templateResult.parsed).length > 0) {
-        if (templateResult.confidenceScore < CONSTANTS.REGEX_PRODUCTION_THRESHOLD) {
-          logger.info(
-            `[Ingestion] Skipping low-confidence template ${templateResult.templateId} (confidence=${templateResult.confidenceScore.toFixed(3)}, threshold=${CONSTANTS.REGEX_PRODUCTION_THRESHOLD.toFixed(3)}), messageId=${messageId}`,
-          );
-        } else {
         const regexResult = templateResult.parsed;
         const normalizedType = this.normalizeTransactionType(regexResult.transactionType);
         const parsedAmount = this.parsePositiveAmount(regexResult.amount);
@@ -741,7 +743,6 @@ class IngestionService implements IIngestionService {
           `Category resolved for messageId=${messageId}: category=${category}, source=${categoryResolution.source}${categoryResolution.matchedRule ? `, rule=${categoryResolution.matchedRule}` : ''}`,
         );
         return { merchant, category, refAmount, refCurrency: user.refCurrency };
-        }
         }
       }
 
