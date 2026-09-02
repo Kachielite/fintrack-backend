@@ -45,6 +45,19 @@ const NON_TRANSACTION_KEYWORDS = [
 type TriggerSource = 'cron' | 'manual';
 const TEMPLATE_RETRY_COOLDOWN_MS = 2 * 60 * 1000;
 const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
+// A manual poll (fresh backfill or "sync now" after a while away) can have a large
+// outstanding backlog, unlike the steady-state cron cadence which rarely sees more
+// than a handful of new messages per cycle. Processing that backlog in one dense
+// burst is what trips OpenAI's rate limit in the first place (fintrack-backend#137,
+// complements the retry mechanism in #136). Chunk manual polls smaller and pace
+// the remainder via delayed follow-up jobs instead of draining everything at once.
+const INGESTION_BACKFILL_CHUNK_SIZE = 15;
+const INGESTION_BACKFILL_CHUNK_DELAY_MS = 60 * 1000;
+const INGESTION_MESSAGE_PACING_MS = 400;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface TransactionSignal {
   isTransaction: boolean;
@@ -201,6 +214,27 @@ class IngestionService implements IIngestionService {
     }
   }
 
+  /**
+   * Paces a manual poll's remaining backlog instead of draining it in one dense
+   * burst — schedules the next chunk via a delayed BullMQ job when Redis is
+   * available (the primary path in production), or a defensive setTimeout
+   * fallback otherwise, mirroring enqueuePoll's Redis-vs-direct branching.
+   */
+  private scheduleNextPollChunk(connectionId: number, source: TriggerSource): void {
+    const queue = getIngestionQueue();
+    if (queue) {
+      queue
+        .add('poll', { connectionId, source }, { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 })
+        .catch((err) => logger.error(`[Ingestion] Failed to schedule next chunk for connection ${connectionId} - ${err}`));
+    } else {
+      setTimeout(() => {
+        this.pollConnection(connectionId, source).catch((err) =>
+          logger.error(`[Ingestion] Direct chunked poll failed for connection ${connectionId} - ${err}`),
+        );
+      }, INGESTION_BACKFILL_CHUNK_DELAY_MS);
+    }
+  }
+
   async pollConnection(connectionId: number, source: TriggerSource = 'cron'): Promise<void> {
     const channel = `sync:${connectionId}`;
     const emit = (event: string, data: unknown) =>
@@ -230,20 +264,27 @@ class IngestionService implements IIngestionService {
       const oauth2Client = await this.emailConnectionService.getOAuth2Client(connection);
       const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
+      // A manual poll may be sitting on a large backlog (fresh backfill, or a
+      // "sync now" after a while away) — chunk it smaller than the steady-state
+      // cron cadence and pace the remainder via a delayed follow-up instead of
+      // draining everything in one dense burst. See fintrack-backend#137.
+      const isManualPoll = source === 'manual';
       const listResp = await gmail.users.messages.list({
         userId: 'me',
         labelIds: [connection.gmailLabelId],
-        maxResults: 50,
+        maxResults: isManualPoll ? INGESTION_BACKFILL_CHUNK_SIZE : 50,
       });
 
       const messages = listResp.data.messages || [];
       const total = messages.length;
-      logger.info(`[Ingestion] Found ${total} messages in label "${labelName}" for connection ${connectionId}`);
+      const hasMoreBacklog = isManualPoll && !!listResp.data.nextPageToken;
+      logger.info(`[Ingestion] Found ${total} messages in label "${labelName}" for connection ${connectionId}${hasMoreBacklog ? ' (more queued for a paced follow-up)' : ''}`);
 
       emit('start', { total });
 
       let processedCount = 0;
       let doneIndex = 0;
+      let attemptedIndex = 0;
       const processedTransactions: ProcessedTransaction[] = [];
 
       for (const msg of messages) {
@@ -258,6 +299,12 @@ class IngestionService implements IIngestionService {
           emit('progress', { processed: doneIndex, total });
           continue;
         }
+
+        // Pace only actual (AI-driving) attempts, not the skip-only fast path for
+        // messages already processed — no point slowing down a mostly-caught-up
+        // poll that has nothing left to do.
+        if (attemptedIndex > 0) await delay(INGESTION_MESSAGE_PACING_MS);
+        attemptedIndex++;
 
         try {
           const msgResp = await gmail.users.messages.get({
@@ -296,12 +343,20 @@ class IngestionService implements IIngestionService {
         await this.connectionRepository.updateLastSynced(connectionId, processedCount);
       }
 
-      logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
+      if (hasMoreBacklog) {
+        logger.info(`[Ingestion] Chunk complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages — scheduling next chunk in ${INGESTION_BACKFILL_CHUNK_DELAY_MS / 1000}s`);
+        this.scheduleNextPollChunk(connectionId, source);
+      } else {
+        logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
+      }
       emit('done', { added: processedCount });
 
-      // Create a notification — always for manual/SSE, only when new transactions for cron
+      // Create a notification — always for manual/SSE (once the backlog is fully
+      // drained, not per intermediate chunk — a chunk isn't a real "sync complete"
+      // moment and would just spam a misleading notification), only when new
+      // transactions for cron.
       const userId = connection.userId;
-      if (source === 'manual' || processedCount > 0) {
+      if ((isManualPoll && !hasMoreBacklog) || (!isManualPoll && processedCount > 0)) {
         await this.notificationService.create({
           userId,
           type: 'sync_complete',
