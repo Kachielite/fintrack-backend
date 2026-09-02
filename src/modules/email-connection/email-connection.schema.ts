@@ -1,4 +1,4 @@
-import { integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 import { UserSchema } from '@/modules/user/user.schema';
 
 export const EmailConnectionSchema = pgTable('email_connections', {
@@ -16,6 +16,11 @@ export const EmailConnectionSchema = pgTable('email_connections', {
   status: text('status').default('active').notNull(),
   lastSyncedAt: timestamp('last_synced_at'),
   lastSyncMessageCount: integer('last_sync_message_count').default(0),
+  // Set while a manual poll's chunked backfill still has more Gmail pages to
+  // walk through (see fintrack-backend#137) — lets other features (e.g. Iris's
+  // first insight) know not to treat the connection's current transaction set
+  // as final yet.
+  backfillPending: boolean('backfill_pending').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

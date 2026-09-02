@@ -137,7 +137,7 @@ function formatAmount(amount: number, currency: string): string {
 
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
-  pollConnection(connectionId: number, source?: TriggerSource): Promise<void>;
+  pollConnection(connectionId: number, source?: TriggerSource, pageToken?: string): Promise<void>;
   enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
   processMessage(
     connectionId: number,
@@ -220,23 +220,25 @@ class IngestionService implements IIngestionService {
    * burst — schedules the next chunk via a delayed BullMQ job when Redis is
    * available (the primary path in production), or a defensive setTimeout
    * fallback otherwise, mirroring enqueuePoll's Redis-vs-direct branching.
+   * Carries the Gmail pageToken forward so the next chunk actually continues
+   * from where this one left off, instead of re-fetching the same first page.
    */
-  private scheduleNextPollChunk(connectionId: number, source: TriggerSource): void {
+  private scheduleNextPollChunk(connectionId: number, source: TriggerSource, pageToken: string): void {
     const queue = getIngestionQueue();
     if (queue) {
       queue
-        .add('poll', { connectionId, source }, { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 })
+        .add('poll', { connectionId, source, pageToken }, { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 })
         .catch((err) => logger.error(`[Ingestion] Failed to schedule next chunk for connection ${connectionId} - ${err}`));
     } else {
       setTimeout(() => {
-        this.pollConnection(connectionId, source).catch((err) =>
+        this.pollConnection(connectionId, source, pageToken).catch((err) =>
           logger.error(`[Ingestion] Direct chunked poll failed for connection ${connectionId} - ${err}`),
         );
       }, INGESTION_BACKFILL_CHUNK_DELAY_MS);
     }
   }
 
-  async pollConnection(connectionId: number, source: TriggerSource = 'cron'): Promise<void> {
+  async pollConnection(connectionId: number, source: TriggerSource = 'cron', pageToken?: string): Promise<void> {
     const channel = `sync:${connectionId}`;
     const emit = (event: string, data: unknown) =>
       syncEventBus.emit(channel, { event, data });
@@ -274,12 +276,22 @@ class IngestionService implements IIngestionService {
         userId: 'me',
         labelIds: [connection.gmailLabelId],
         maxResults: isManualPoll ? INGESTION_BACKFILL_CHUNK_SIZE : 50,
+        pageToken,
       });
 
       const messages = listResp.data.messages || [];
       const total = messages.length;
-      const hasMoreBacklog = isManualPoll && !!listResp.data.nextPageToken;
+      const nextPageToken = listResp.data.nextPageToken;
+      const hasMoreBacklog = isManualPoll && !!nextPageToken;
       logger.info(`[Ingestion] Found ${total} messages in label "${labelName}" for connection ${connectionId}${hasMoreBacklog ? ' (more queued for a paced follow-up)' : ''}`);
+
+      // Persisted so other features (Iris's first insight, in particular) can
+      // tell a connection's transaction set isn't final yet, independent of any
+      // single poll invocation. Set as soon as we know, not after processing
+      // this chunk, so a mid-chunk failure doesn't leave stale state.
+      if (isManualPoll) {
+        await this.connectionRepository.updateBackfillPending(connectionId, hasMoreBacklog);
+      }
 
       emit('start', { total });
 
@@ -344,13 +356,17 @@ class IngestionService implements IIngestionService {
         await this.connectionRepository.updateLastSynced(connectionId, processedCount);
       }
 
-      if (hasMoreBacklog) {
+      if (hasMoreBacklog && nextPageToken) {
         logger.info(`[Ingestion] Chunk complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages — scheduling next chunk in ${INGESTION_BACKFILL_CHUNK_DELAY_MS / 1000}s`);
-        this.scheduleNextPollChunk(connectionId, source);
+        this.scheduleNextPollChunk(connectionId, source, nextPageToken);
       } else {
         logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
       }
-      emit('done', { added: processedCount });
+      // stillScanning tells the client this chunk's count isn't the final word —
+      // more of the backlog is still being paced in via follow-up chunks. Without
+      // it, onboarding (or any other "done" listener) would treat the first
+      // chunk's count as complete and celebrate a partial number.
+      emit('done', { added: processedCount, stillScanning: hasMoreBacklog });
 
       // Create a notification — always for manual/SSE (once the backlog is fully
       // drained, not per intermediate chunk — a chunk isn't a real "sync complete"

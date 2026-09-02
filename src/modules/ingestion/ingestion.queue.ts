@@ -8,6 +8,10 @@ const CONCURRENCY = parseInt(process.env.INGESTION_CONCURRENCY || '5', 10);
 export interface ConnectionJobData {
   connectionId: number;
   source: 'cron' | 'manual';
+  // Gmail list pageToken to resume a chunked manual poll from — see
+  // fintrack-backend#137. Absent for a fresh poll (cron, or the first chunk
+  // of a manual one).
+  pageToken?: string;
 }
 
 let _queue: Queue<ConnectionJobData> | null = null;
@@ -40,14 +44,14 @@ export function startIngestionWorker(): Worker<ConnectionJobData> | null {
   const worker = new Worker<ConnectionJobData>(
     QUEUE_NAME,
     async (job: Job<ConnectionJobData>) => {
-      const { connectionId, source } = job.data;
+      const { connectionId, source, pageToken } = job.data;
       // Lazy-resolve to avoid a circular import at module-load time.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { container } = require('tsyringe');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const IngestionServiceClass = require('@/modules/ingestion/ingestion.service').default;
       const service = container.resolve(IngestionServiceClass);
-      await service.pollConnection(connectionId, source);
+      await service.pollConnection(connectionId, source, pageToken);
     },
     { connection: conn, concurrency: CONCURRENCY },
   );

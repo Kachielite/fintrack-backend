@@ -13,6 +13,7 @@ export interface IEmailConnection {
   status: string;
   lastSyncedAt: Date | null;
   lastSyncMessageCount: number | null;
+  backfillPending: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

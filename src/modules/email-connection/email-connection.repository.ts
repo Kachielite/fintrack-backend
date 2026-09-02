@@ -25,6 +25,9 @@ export interface IEmailConnectionRepository {
   ): Promise<void>;
   updateLastSynced(id: number, messageCount: number): Promise<void>;
   updateStatus(id: number, status: string): Promise<void>;
+  updateBackfillPending(id: number, pending: boolean): Promise<void>;
+  /** True if any of this user's connections still has a chunked backfill in progress. */
+  hasActiveBackfill(userId: number): Promise<boolean>;
   delete(id: number, userId: number): Promise<void>;
 }
 
@@ -143,6 +146,22 @@ class EmailConnectionRepositoryImpl implements IEmailConnectionRepository {
       .update(EmailConnectionSchema)
       .set({ status, updatedAt: new Date() })
       .where(eq(EmailConnectionSchema.id, id));
+  }
+
+  async updateBackfillPending(id: number, pending: boolean): Promise<void> {
+    await this.db.client
+      .update(EmailConnectionSchema)
+      .set({ backfillPending: pending, updatedAt: new Date() })
+      .where(eq(EmailConnectionSchema.id, id));
+  }
+
+  async hasActiveBackfill(userId: number): Promise<boolean> {
+    const rows = await this.db.client
+      .select({ id: EmailConnectionSchema.id })
+      .from(EmailConnectionSchema)
+      .where(and(eq(EmailConnectionSchema.userId, userId), eq(EmailConnectionSchema.backfillPending, true)))
+      .limit(1);
+    return rows.length > 0;
   }
 
   async delete(id: number, userId: number): Promise<void> {
