@@ -102,6 +102,8 @@ export interface IParserRuleService {
     emailBody: string,
     emailSubject: string,
   ): Promise<IParserTemplate>;
+  /** Any template row at all for this bank, regardless of status — see fintrack-backend#140. */
+  hasExistingTemplate(bankId: number): Promise<boolean>;
   identifyBank(
     senderEmail: string,
     emailSubject: string,
@@ -556,6 +558,10 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
       logger.error(`Error extracting transaction for bank ${bankName} - ${error}`);
       return null;
     }
+  }
+
+  async hasExistingTemplate(bankId: number): Promise<boolean> {
+    return this.repository.hasAnyTemplateForBank(bankId);
   }
 
   async generateTemplate(

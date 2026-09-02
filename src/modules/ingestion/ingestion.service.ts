@@ -1475,8 +1475,21 @@ class IngestionService implements IIngestionService {
     this.templateGenerationInFlight.add(bankId);
     setImmediate(() => {
       this.parserRuleService
-        .generateTemplate(bankId, emailBody, emailSubject)
-        .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence))
+        .hasExistingTemplate(bankId)
+        .then((exists) => {
+          if (exists) {
+            // A prior attempt already created a template for this bank (candidate,
+            // audited, production, or failed_audit) — a burst of further same-bank
+            // emails during a backfill shouldn't each mint their own near-duplicate
+            // template. Manual regeneration (e.g. the admin "Generate" action) can
+            // still create a new one intentionally; this only guards the automatic
+            // per-email trigger. See fintrack-backend#140.
+            return null;
+          }
+          return this.parserRuleService
+            .generateTemplate(bankId, emailBody, emailSubject)
+            .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence));
+        })
         .then(() => {
           this.templateGenerationCooldownUntil.delete(bankId);
         })
