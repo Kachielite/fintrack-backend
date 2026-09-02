@@ -1,5 +1,19 @@
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
 
+/**
+ * Thrown by extractTransaction when the OpenAI call itself was rate-limited —
+ * distinct from a normal `null` return, which means the AI genuinely judged the
+ * email not to be a transaction. Callers must not treat the two the same way:
+ * a rate limit should leave the message retryable, not permanently classified
+ * as non_transaction.
+ */
+export class RateLimitedExtractionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RateLimitedExtractionError';
+  }
+}
+
 export interface IParserRule {
   id: number;
   bankId: number;

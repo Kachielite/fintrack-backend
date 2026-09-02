@@ -10,6 +10,11 @@ export const ProcessedEmailSchema = pgTable('processed_emails', {
   processedAt: timestamp('processed_at').defaultNow().notNull(),
   outcome: text('outcome').notNull(),
   transactionId: integer('transaction_id'),
+  // Only meaningful when outcome='failed' — how many times a retryable failure
+  // (e.g. rate-limited) has been reprocessed. Once it reaches MAX_PROCESSING_RETRIES
+  // (ingestion.repository.ts) the row becomes terminal and is skipped like any
+  // other processed message.
+  retryCount: integer('retry_count').default(0).notNull(),
 }, (table) => ({
   connectionMessageUnique: uniqueIndex('processed_emails_connection_message_unique').on(
     table.emailConnectionId,

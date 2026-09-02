@@ -5,6 +5,7 @@ export interface IProcessedEmail {
   processedAt: Date;
   outcome: string;
   transactionId: number | null;
+  retryCount: number;
 }
 
 export interface ICreateProcessedEmail {

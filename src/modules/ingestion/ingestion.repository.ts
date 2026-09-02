@@ -1,15 +1,27 @@
 import { inject, injectable } from 'tsyringe';
-import { and, count, eq, isNotNull } from 'drizzle-orm';
+import { and, count, eq, isNotNull, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { ProcessedEmailSchema } from './ingestion.schema';
 import { EmailConnectionSchema } from '@/modules/email-connection/email-connection.schema';
 import { TransactionSchema } from '@/modules/transaction/transaction.schema';
 import { IProcessedEmail, ICreateProcessedEmail, IConnectionStats } from './ingestion.interface';
 
+// A retryable failure (e.g. rate-limited) stays retryable across poll cycles up to
+// this many attempts, after which it's treated as terminal like any other
+// processed message — this caps retries instead of looping on a message forever.
+export const MAX_PROCESSING_RETRIES = 5;
+
 export interface IIngestionRepository {
   isAlreadyProcessed(connectionId: number, gmailMessageId: string): Promise<boolean>;
   isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean>;
   markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail | null>;
+  /**
+   * Records a retryable failure (e.g. rate-limited extraction) without permanently
+   * excluding the message — isAlreadyProcessed/isAlreadyProcessedForUser treat this
+   * as "not yet processed" until retryCount reaches MAX_PROCESSING_RETRIES, so a
+   * later poll cycle picks the message back up naturally.
+   */
+  markRetryable(connectionId: number, gmailMessageId: string): Promise<void>;
   getConnectionStats(connectionId: number): Promise<IConnectionStats>;
   deleteConnectionData(connectionId: number): Promise<void>;
 }
@@ -20,7 +32,7 @@ class IngestionRepositoryImpl implements IIngestionRepository {
 
   async isAlreadyProcessed(connectionId: number, gmailMessageId: string): Promise<boolean> {
     const rows = await this.db.client
-      .select({ id: ProcessedEmailSchema.id })
+      .select({ outcome: ProcessedEmailSchema.outcome, retryCount: ProcessedEmailSchema.retryCount })
       .from(ProcessedEmailSchema)
       .where(
         and(
@@ -29,12 +41,15 @@ class IngestionRepositoryImpl implements IIngestionRepository {
         ),
       )
       .limit(1);
-    return rows.length > 0;
+    if (rows.length === 0) return false;
+    const [row] = rows;
+    if (row.outcome === 'failed') return row.retryCount >= MAX_PROCESSING_RETRIES;
+    return true;
   }
 
   async isAlreadyProcessedForUser(userId: number, gmailMessageId: string): Promise<boolean> {
     const rows = await this.db.client
-      .select({ id: ProcessedEmailSchema.id })
+      .select({ outcome: ProcessedEmailSchema.outcome, retryCount: ProcessedEmailSchema.retryCount })
       .from(ProcessedEmailSchema)
       .innerJoin(
         EmailConnectionSchema,
@@ -47,7 +62,10 @@ class IngestionRepositoryImpl implements IIngestionRepository {
         ),
       )
       .limit(1);
-    return rows.length > 0;
+    if (rows.length === 0) return false;
+    const [row] = rows;
+    if (row.outcome === 'failed') return row.retryCount >= MAX_PROCESSING_RETRIES;
+    return true;
   }
 
   async markProcessed(data: ICreateProcessedEmail): Promise<IProcessedEmail | null> {
@@ -59,9 +77,38 @@ class IngestionRepositoryImpl implements IIngestionRepository {
         outcome: data.outcome,
         transactionId: data.transactionId,
       })
-      .onConflictDoNothing()
+      .onConflictDoUpdate({
+        target: [ProcessedEmailSchema.emailConnectionId, ProcessedEmailSchema.gmailMessageId],
+        set: {
+          outcome: data.outcome,
+          transactionId: data.transactionId,
+          processedAt: new Date(),
+        },
+      })
       .returning();
     return (row as IProcessedEmail) ?? null;
+  }
+
+  async markRetryable(connectionId: number, gmailMessageId: string): Promise<void> {
+    await this.db.client
+      .insert(ProcessedEmailSchema)
+      .values({
+        emailConnectionId: connectionId,
+        gmailMessageId,
+        outcome: 'failed',
+        // Counts this call itself as attempt 1, so retryCount reaching
+        // MAX_PROCESSING_RETRIES means exactly that many attempts were made —
+        // not that many again on top of an uncounted first one.
+        retryCount: 1,
+      })
+      .onConflictDoUpdate({
+        target: [ProcessedEmailSchema.emailConnectionId, ProcessedEmailSchema.gmailMessageId],
+        set: {
+          outcome: 'failed',
+          retryCount: sql`${ProcessedEmailSchema.retryCount} + 1`,
+          processedAt: new Date(),
+        },
+      });
   }
 
   async getConnectionStats(connectionId: number): Promise<IConnectionStats> {
