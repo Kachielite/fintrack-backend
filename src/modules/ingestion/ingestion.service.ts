@@ -285,6 +285,14 @@ class IngestionService implements IIngestionService {
       const hasMoreBacklog = isManualPoll && !!nextPageToken;
       logger.info(`[Ingestion] Found ${total} messages in label "${labelName}" for connection ${connectionId}${hasMoreBacklog ? ' (more queued for a paced follow-up)' : ''}`);
 
+      // Persisted so other features (Iris's first insight, in particular) can
+      // tell a connection's transaction set isn't final yet, independent of any
+      // single poll invocation. Set as soon as we know, not after processing
+      // this chunk, so a mid-chunk failure doesn't leave stale state.
+      if (isManualPoll) {
+        await this.connectionRepository.updateBackfillPending(connectionId, hasMoreBacklog);
+      }
+
       emit('start', { total });
 
       let processedCount = 0;
@@ -354,7 +362,11 @@ class IngestionService implements IIngestionService {
       } else {
         logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
       }
-      emit('done', { added: processedCount });
+      // stillScanning tells the client this chunk's count isn't the final word —
+      // more of the backlog is still being paced in via follow-up chunks. Without
+      // it, onboarding (or any other "done" listener) would treat the first
+      // chunk's count as complete and celebrate a partial number.
+      emit('done', { added: processedCount, stillScanning: hasMoreBacklog });
 
       // Create a notification — always for manual/SSE (once the backlog is fully
       // drained, not per intermediate chunk — a chunk isn't a real "sync complete"

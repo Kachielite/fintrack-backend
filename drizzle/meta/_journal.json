@@ -120,6 +120,13 @@
       "when": 1788385200000,
       "tag": "0016_processed_email_retry_count",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788471600000,
+      "tag": "0017_email_connection_backfill_pending",
+      "breakpoints": true
     }
   ]
 }

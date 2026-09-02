@@ -13,6 +13,7 @@ import { IGoal } from '@/modules/goal/goal.interface';
 import { GoalTypeEnum } from '@/modules/user/user.enum';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { IUserRepository } from '@/modules/user/user.repository';
+import { IEmailConnectionRepository } from '@/modules/email-connection/email-connection.repository';
 import { InternalServerException } from '@/common/exception';
 import ExchangeRateService from '@/modules/exchange-rate/exchange-rate.service';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
@@ -24,6 +25,7 @@ export interface IInsightService {
   generateWeeklyReportForUser(userId: number): Promise<void>;
   generateMonthlyReportForUser(userId: number): Promise<void>;
   canGenerateWeeklyReport(userId: number): Promise<boolean>;
+  hasActiveBackfill(userId: number): Promise<boolean>;
 }
 
 interface ChartPoint {
@@ -362,6 +364,7 @@ class InsightService implements IInsightService {
     @inject('IUserRepository') private userRepository: IUserRepository,
     @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
     @inject(NotificationService) private notificationService: INotificationService,
+    @inject('IEmailConnectionRepository') private emailConnectionRepository: IEmailConnectionRepository,
   ) {
     this.openai = new OpenAI({ apiKey: CONSTANTS.OPENAI_API_KEY });
   }
@@ -429,8 +432,13 @@ class InsightService implements IInsightService {
     };
   }
 
+  async hasActiveBackfill(userId: number): Promise<boolean> {
+    return this.emailConnectionRepository.hasActiveBackfill(userId);
+  }
+
   async canGenerateWeeklyReport(userId: number): Promise<boolean> {
     if (this.weeklyGenerationInProgress.has(userId)) return false;
+    if (await this.emailConnectionRepository.hasActiveBackfill(userId)) return false;
     const { start: currentWeekStart } = getCurrentWeekBounds(new Date());
     const { start } = getPriorWeekBounds(currentWeekStart);
     const alreadyGenerated = await this.insightRepository.hasReportForPeriod(userId, 'weekly', start);
@@ -442,6 +450,18 @@ class InsightService implements IInsightService {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) return;
+
+      // A new user's first backfill can still be mid-flight (chunked, paced over
+      // several minutes — see fintrack-backend#137) when this fires, whether via
+      // the on-demand /insights/generate call or a cron tick that happens to land
+      // during a slow backfill. Generating against a partial transaction set would
+      // produce a misleadingly small/incomplete first report; defer until the
+      // backlog is fully drained instead — the next trigger (another on-demand
+      // call, or next week's cron) will pick it up once it's caught up.
+      if (await this.emailConnectionRepository.hasActiveBackfill(userId)) {
+        logger.info(`Skipping insight generation for user ${userId} — backfill still in progress`);
+        return;
+      }
 
       const now = new Date();
       // The report always covers the most recently *concluded* Mon-Sun week,
@@ -616,6 +636,12 @@ Return JSON only.`,
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) return;
+
+      // See the matching comment in generateWeeklyReportForUser — same reasoning.
+      if (await this.emailConnectionRepository.hasActiveBackfill(userId)) {
+        logger.info(`Skipping monthly insight generation for user ${userId} — backfill still in progress`);
+        return;
+      }
 
       const now = new Date();
       const { start: monthStart, end: monthEnd } = getMonthBounds(now, 1);

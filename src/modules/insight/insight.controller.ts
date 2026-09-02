@@ -93,20 +93,24 @@ class InsightController extends BaseController {
    *   post:
    *     tags: [Insights]
    *     summary: Trigger this week's report generation for the current user
-   *     description: Rejects with 409 if this week's report already exists or is currently generating.
+   *     description: Rejects with 409 if this week's report already exists, is currently generating, or a Gmail backfill is still in progress.
    *     security:
    *       - bearerAuth: []
    *     responses:
    *       '202':
    *         description: Generation started
    *       '409':
-   *         description: This week's report already exists or is already generating
+   *         description: This week's report already exists, is already generating, or a backfill is still in progress
    *       '401':
    *         $ref: '#/components/responses/Unauthorized'
    */
   @Post('/generate', { statusCode: 202 })
   async generate(req: Request) {
     const userId = (req as unknown as IAuthenticatedRequest).user?.id as number;
+
+    if (await this.service.hasActiveBackfill(userId)) {
+      throw new ConflictException("Still scanning your email history — check back in a few minutes.");
+    }
 
     const canGenerate = await this.service.canGenerateWeeklyReport(userId);
     if (!canGenerate) {
