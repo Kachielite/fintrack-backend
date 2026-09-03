@@ -37,6 +37,50 @@ describe('resolveBackfillWindowDays', () => {
   });
 });
 
+describe('parseDateCandidate', () => {
+  test('treats an ambiguous dd/mm slash date as day-first, not native Date()\'s month-first', () => {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).parseDateCandidate('04/05/2025');
+    // "04/05/2025" day-first means 4 May 2025, not April 4/5 (native Date()'s
+    // MM/DD/YYYY interpretation) — see fintrack-backend#161.
+    const expected = new Date(2025, 4, 4); // month index 4 = May
+    assert.equal(result.getTime(), expected.getTime());
+  });
+
+  test('applies the same day-first rule with a time component', () => {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).parseDateCandidate('04/05/2025 10:30');
+    const expected = new Date(2025, 4, 4, 10, 30, 0);
+    assert.equal(result.getTime(), expected.getTime());
+  });
+
+  test('still parses an unambiguous day>12 slash date correctly (day-first was already reachable here)', () => {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).parseDateCandidate('25/03/2025');
+    const expected = new Date(2025, 2, 25); // 25 March 2025
+    assert.equal(result.getTime(), expected.getTime());
+  });
+
+  test('still parses ISO-format dates via the native Date() fallback, unaffected', () => {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).parseDateCandidate('2025-05-04T10:30:00Z');
+    assert.equal(result.toISOString(), '2025-05-04T10:30:00.000Z');
+  });
+
+  test('still parses month-name dates via the native Date() fallback, unaffected', () => {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).parseDateCandidate('04 May 2025');
+    assert.equal(result.getFullYear(), 2025);
+    assert.equal(result.getMonth(), 4); // May
+    assert.equal(result.getDate(), 4);
+  });
+});
+
 describe('resolveTransactionDate', () => {
   test('falls back to receivedAt when no date is found anywhere in the text', () => {
     const service = makeBareIngestionService();
