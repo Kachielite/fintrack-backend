@@ -63,4 +63,30 @@ describe('execRuleBatchWithTimeout', () => {
     if (result.timedOut) return;
     assert.deepEqual(result.results, []);
   });
+
+  // fintrack-backend#185: the timeout used to start counting at `new Worker()`,
+  // so OS thread-spawn/eval-compile time (which spikes under concurrent load,
+  // since many batches spawn workers at once and contend for creation) ate
+  // into the budget meant for regex execution. Firing many batches at once
+  // with a trivially-fast, safe pattern and a modest (not razor-thin) timeout
+  // reproduces that contention; none of them should time out now that the
+  // timer only starts after the worker signals it's alive.
+  test('a burst of concurrent batches with a trivial pattern does not false-positive under spawn contention', async () => {
+    const concurrency = 25;
+    const results = await Promise.all(
+      Array.from({ length: concurrency }, () =>
+        execRuleBatchWithTimeout(
+          [{ pattern: 'Amount:\\s*([\\d,]+\\.\\d{2})', flags: 'i', extractGroup: 1 }],
+          'Amount: 5,000.00\nDate: today',
+          100,
+        ),
+      ),
+    );
+
+    for (const result of results) {
+      assert.equal(result.timedOut, false);
+      if (result.timedOut) continue;
+      assert.deepEqual(result.results, ['5,000.00']);
+    }
+  });
 });
