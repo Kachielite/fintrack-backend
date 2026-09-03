@@ -278,6 +278,28 @@ class ParserRuleService implements IParserRuleService {
         };
       }
 
+      // A template with no working amount rule can never produce a transaction -
+      // ingestion.service.ts hard-gates the regex-success path on parsedAmount
+      // != null. No LLM judge opinion can make an amount-less template usable,
+      // so fail it here without spending a call: the LLM-judge path below only
+      // nudges toward passing when amount *did* match, it never hard-requires
+      // amount coverage the way the fast auto-promote path above does. See
+      // fintrack-backend#183.
+      if (!amountActuallyMatched) {
+        const notes =
+          'Failed: no amount rule matched real blueprint text - a template cannot be promoted without a working amount extraction';
+        await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.FAILED_AUDIT, notes);
+        return {
+          passed: false,
+          notes,
+          fieldResults: rulesWithMatches.map((r) => ({
+            field: r.field,
+            passed: r.matched,
+            concern: r.matched ? `captured: "${r.actual_match}"` : 'no match in blueprint',
+          })),
+        };
+      }
+
       const blueprintContext = await this.getBlueprintContext(template.bankId);
 
       const response = await this.openai.chat.completions.create({
