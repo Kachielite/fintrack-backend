@@ -148,6 +148,13 @@
       "when": 1788731000000,
       "tag": "0020_email_connection_ai_call_cap",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788731100000,
+      "tag": "0021_parser_template_audit_fields",
+      "breakpoints": true
     }
   ]
 }
