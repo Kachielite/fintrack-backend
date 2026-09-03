@@ -48,6 +48,10 @@ export interface IParserTemplate {
   failCount: number;
   recentFailStreak: number;
   lastFailedAt: Date | null;
+  auditNotes: string | null;
+  auditPassedAt: Date | null;
+  promotedAt: Date | null;
+  deprecatedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

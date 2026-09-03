@@ -50,6 +50,10 @@ export const ParserTemplateSchema = pgTable('parser_templates', {
   // eventually drift low enough. See fintrack-backend#165.
   recentFailStreak: integer('recent_fail_streak').default(0).notNull(),
   lastFailedAt: timestamp('last_failed_at'),
+  auditNotes: text('audit_notes'),
+  auditPassedAt: timestamp('audit_passed_at'),
+  promotedAt: timestamp('promoted_at'),
+  deprecatedAt: timestamp('deprecated_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
