@@ -62,6 +62,14 @@ const INGESTION_MESSAGE_PACING_MS = 400;
 // promo date, ...) is almost always wrong, not a legitimately old transaction.
 // See fintrack-backend#162.
 const INGESTION_DATE_SANITY_TOLERANCE_DAYS = 3;
+// recordFailure only fires today on an unparseable amount or a low-quality
+// merchant - a template that extracts a wrong-but-well-formed amount, date, or
+// merchant is never caught. For a sample of production-template matches, also
+// run AI extraction in the background and compare fields; a divergence records
+// a failure the same way, feeding the existing confidence/demotion machinery.
+// Kept low and off the critical path since every sampled match costs an AI
+// call. See fintrack-backend#163.
+const SHADOW_VERIFY_SAMPLE_RATE = 0.08;
 // Onboarding tells free-tier users we're scanning "the last 2 months" (their
 // retention window, see user.constants.ts). Nothing previously enforced any
 // bound at all, so a manual/backfill poll would walk a label's entire history
@@ -862,6 +870,20 @@ class IngestionService implements IIngestionService {
             .catch((err) => {
               logger.error(`Failed to capture blueprint for bank ${bank.id} - ${err}`);
             });
+
+          if (Math.random() < SHADOW_VERIFY_SAMPLE_RATE) {
+            this.shadowVerifyTemplateMatch(
+              templateResult.templateId,
+              bank.name,
+              emailBody,
+              emailSubject,
+              regexResult,
+              receivedAt,
+              dbCategories,
+            ).catch((err) => {
+              logger.error(`[ShadowVerify] Failed for template ${templateResult.templateId} - ${err}`);
+            });
+          }
         });
 
         await this.ingestionRepository.markProcessed({
@@ -1697,6 +1719,70 @@ class IngestionService implements IIngestionService {
       }
     }
     return '';
+  }
+
+  /**
+   * Runs AI extraction on a sample of production-template matches and compares
+   * fields against the regex result. recordFailure only fires today on an
+   * unparseable amount or a low-quality merchant - a wrong-but-well-formed
+   * field (a bad amount, a wrong date, a plausible-but-incorrect merchant)
+   * currently has no way to be caught. A divergence here records a failure the
+   * same way, feeding the existing confidence-score/demotion machinery instead
+   * of duplicating it. Runs off the critical path - the transaction from the
+   * regex match is already created by the time this fires. See
+   * fintrack-backend#163.
+   */
+  private async shadowVerifyTemplateMatch(
+    templateId: number,
+    bankName: string,
+    emailBody: string,
+    emailSubject: string,
+    regexResult: ParsedTransaction,
+    receivedAt: Date,
+    dbCategories: ICategory[],
+  ): Promise<void> {
+    let aiResult: ParsedTransaction | null;
+    try {
+      aiResult = await this.parserRuleService.extractTransaction(bankName, emailBody, emailSubject, dbCategories);
+    } catch (err) {
+      if (err instanceof RateLimitedExtractionError) return;
+      logger.error(`[ShadowVerify] AI extraction failed for template ${templateId} - ${err}`);
+      return;
+    }
+    // A null AI result (genuinely judged not a transaction, or a parse miss)
+    // isn't a strong enough signal either way - skip rather than penalize.
+    if (!aiResult) return;
+
+    const regexAmount = this.parsePositiveAmount(regexResult.amount);
+    const aiAmount = this.parsePositiveAmount(aiResult.amount);
+    const amountDiverges = regexAmount == null || aiAmount == null || Math.abs(regexAmount - aiAmount) > 0.01;
+
+    const typeDiverges =
+      this.normalizeTransactionType(regexResult.transactionType) !==
+      this.normalizeTransactionType(aiResult.transactionType);
+
+    const regexDate = this.resolveTransactionDate(regexResult.date, emailBody, emailSubject, receivedAt);
+    const aiDate = this.resolveTransactionDate(aiResult.date, emailBody, emailSubject, receivedAt);
+    const dateDiverges = regexDate.toDateString() !== aiDate.toDateString();
+
+    const regexMerchant = this.normalizeMerchantForComparison(regexResult.merchant as string | undefined);
+    const aiMerchant = this.normalizeMerchantForComparison(aiResult.merchant as string | undefined);
+    const merchantDiverges =
+      !!regexMerchant && !!aiMerchant && !regexMerchant.includes(aiMerchant) && !aiMerchant.includes(regexMerchant);
+
+    if (amountDiverges || typeDiverges || dateDiverges || merchantDiverges) {
+      logger.warn(
+        `[ShadowVerify] Divergence for template ${templateId}: amount=${amountDiverges} type=${typeDiverges} date=${dateDiverges} merchant=${merchantDiverges}`,
+      );
+      await this.parserRuleService.recordFailure(templateId);
+    }
+  }
+
+  // Loose equality for merchant names extracted two different ways (regex vs
+  // AI) - strips everything but alphanumerics so "Jumia Nigeria" and "JUMIA"
+  // compare as related without needing real fuzzy matching.
+  private normalizeMerchantForComparison(value: string | undefined): string {
+    return (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
   private scheduleTemplateGeneration(

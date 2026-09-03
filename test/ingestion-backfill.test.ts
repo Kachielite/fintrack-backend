@@ -5,6 +5,7 @@ import IngestionService, {
   formatGmailAfterDate,
   resolveBackfillWindowDays,
 } from '../src/modules/ingestion/ingestion.service';
+import { RateLimitedExtractionError, ParsedTransaction } from '../src/modules/parser-rule/parser-rule.interface';
 
 // resolveTransactionDate (and the sibling helpers it calls) never touch any
 // injected dependency, so a bare prototype instance is enough to exercise it
@@ -189,5 +190,84 @@ describe('scheduleNextPollChunk (chunk-chain cutoff pinning)', () => {
     } finally {
       global.setTimeout = originalSetTimeout;
     }
+  });
+});
+
+describe('shadowVerifyTemplateMatch', () => {
+  const REGEX_RESULT: ParsedTransaction = {
+    amount: 5000,
+    transactionType: 'debit',
+    date: '03/07/2026 09:00',
+    merchant: 'Jumia Nigeria',
+  };
+  const RECEIVED_AT = new Date('2026-07-04T10:00:00Z');
+
+  function makeServiceWithFakeParserRule(extractTransactionImpl: () => Promise<ParsedTransaction | null>) {
+    const service = makeBareIngestionService();
+    const recordFailureCalls: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).parserRuleService = {
+      extractTransaction: extractTransactionImpl,
+      recordFailure: async (templateId: number) => {
+        recordFailureCalls.push(templateId);
+      },
+    };
+    return { service, recordFailureCalls };
+  }
+
+  test('records a failure when the AI-extracted amount diverges from the regex amount', async () => {
+    const { service, recordFailureCalls } = makeServiceWithFakeParserRule(async () => ({
+      ...REGEX_RESULT,
+      amount: 9999, // diverges from REGEX_RESULT's 5000
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).shadowVerifyTemplateMatch(42, 'GTBank', 'body', 'subject', REGEX_RESULT, RECEIVED_AT, []);
+
+    assert.deepEqual(recordFailureCalls, [42]);
+  });
+
+  test('does not record a failure when the AI result closely matches the regex result', async () => {
+    const { service, recordFailureCalls } = makeServiceWithFakeParserRule(async () => ({
+      ...REGEX_RESULT,
+      merchant: 'JUMIA', // normalizes to a substring match of "Jumia Nigeria"
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).shadowVerifyTemplateMatch(42, 'GTBank', 'body', 'subject', REGEX_RESULT, RECEIVED_AT, []);
+
+    assert.deepEqual(recordFailureCalls, []);
+  });
+
+  test('does not record a failure when AI extraction is rate-limited (inconclusive)', async () => {
+    const { service, recordFailureCalls } = makeServiceWithFakeParserRule(async () => {
+      throw new RateLimitedExtractionError('rate limited');
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).shadowVerifyTemplateMatch(42, 'GTBank', 'body', 'subject', REGEX_RESULT, RECEIVED_AT, []);
+
+    assert.deepEqual(recordFailureCalls, []);
+  });
+
+  test('does not record a failure when AI extraction returns null (not conclusive either way)', async () => {
+    const { service, recordFailureCalls } = makeServiceWithFakeParserRule(async () => null);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).shadowVerifyTemplateMatch(42, 'GTBank', 'body', 'subject', REGEX_RESULT, RECEIVED_AT, []);
+
+    assert.deepEqual(recordFailureCalls, []);
+  });
+
+  test('records a failure when the transaction type diverges', async () => {
+    const { service, recordFailureCalls } = makeServiceWithFakeParserRule(async () => ({
+      ...REGEX_RESULT,
+      transactionType: 'credit', // diverges from REGEX_RESULT's debit
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).shadowVerifyTemplateMatch(42, 'GTBank', 'body', 'subject', REGEX_RESULT, RECEIVED_AT, []);
+
+    assert.deepEqual(recordFailureCalls, [42]);
   });
 });
