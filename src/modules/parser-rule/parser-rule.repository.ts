@@ -20,15 +20,20 @@ export interface IParserRuleRepository {
   createRule(data: Partial<IParserRule>): Promise<IParserRule>;
   linkRuleToTemplate(templateId: number, ruleId: number): Promise<void>;
   /**
-   * Any row at all for this bank, regardless of status — used to decide whether
-   * automatic template generation should fire again. A bank that already has a
-   * candidate/audited/production/failed_audit template has already had its one
-   * automatic generation attempt; a burst of further same-bank emails shouldn't
-   * each mint their own near-duplicate template. Deliberately not scoped to
-   * "pending" statuses only — a failed_audit result should also stop further
-   * auto-generation, not just prompt an immediate retry (see fintrack-backend#140).
+   * Any row for this bank AND this specific email-format signature, regardless
+   * of status — used to decide whether automatic template generation should
+   * fire again for that format. A bank that already has a candidate/audited/
+   * production/failed_audit template for a given format has already had its one
+   * automatic generation attempt for that format; a burst of further same-format
+   * emails shouldn't each mint their own near-duplicate template. Deliberately
+   * not scoped to "pending" statuses only — a failed_audit result should also
+   * stop further auto-generation for that format, not just prompt an immediate
+   * retry (see fintrack-backend#140). Scoped by formatSignature (not just
+   * bankId) so a bank's other email formats (credit alert, interbank transfer,
+   * statement, ...) each still get their own generation attempt instead of
+   * being permanently blocked by the first format's template (fintrack-backend#160).
    */
-  hasAnyTemplateForBank(bankId: number): Promise<boolean>;
+  hasTemplateForBankAndSignature(bankId: number, formatSignature: string): Promise<boolean>;
   findProductionTemplatesByBank(bankId: number): Promise<IParserTemplateWithRules[]>;
   findTemplateById(id: number): Promise<IParserTemplateWithRules | null>;
   findAllTemplates(): Promise<IParserTemplate[]>;
@@ -55,6 +60,7 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
         version: data.version || 1,
         description: data.description,
         emailSubjectPattern: data.emailSubjectPattern,
+        formatSignature: data.formatSignature,
       })
       .returning();
     return row as IParserTemplate;
@@ -79,11 +85,16 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
     await this.db.client.insert(TemplateRuleSchema).values({ templateId, ruleId });
   }
 
-  async hasAnyTemplateForBank(bankId: number): Promise<boolean> {
+  async hasTemplateForBankAndSignature(bankId: number, formatSignature: string): Promise<boolean> {
     const rows = await this.db.client
       .select({ id: ParserTemplateSchema.id })
       .from(ParserTemplateSchema)
-      .where(eq(ParserTemplateSchema.bankId, bankId))
+      .where(
+        and(
+          eq(ParserTemplateSchema.bankId, bankId),
+          eq(ParserTemplateSchema.formatSignature, formatSignature),
+        ),
+      )
       .limit(1);
     return rows.length > 0;
   }

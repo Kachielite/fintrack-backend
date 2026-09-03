@@ -41,6 +41,7 @@ export interface IParserTemplate {
   version: number;
   description: string | null;
   emailSubjectPattern: string | null;
+  formatSignature: string | null;
   status: RuleStatusEnum;
   confidenceScore: number;
   matchCount: number;
