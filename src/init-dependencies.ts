@@ -93,6 +93,12 @@ export async function configureContainer(): Promise<void> {
   });
   logger.info(`GmailPollingScheduler started (every ${CONSTANTS.GMAIL_POLL_INTERVAL_MINUTES} minutes).`);
 
+  cron.schedule('*/30 * * * *', async () => {
+    const ingestionService = container.resolve(IngestionService);
+    await ingestionService.sweepRetryableMessages();
+  });
+  logger.info('RetryableSweepScheduler started (every 30 minutes).');
+
   cron.schedule('45 2 * * *', async () => {
     const embeddingService = container.resolve(EmbeddingService);
     const userRepository = container.resolve<IUserRepository>('IUserRepository');

@@ -345,3 +345,96 @@ describe('repairFieldsWithAi', () => {
     assert.equal(result, null);
   });
 });
+
+describe('sweepRetryableMessages', () => {
+  function makeService(retryable: { connectionId: number; gmailMessageId: string }[]) {
+    const service = makeBareIngestionService();
+    const fetchCalls: { connectionId: number; messageId: string }[] = [];
+    const markProcessedCalls: unknown[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).ingestionRepository = {
+      findRetryableEmails: async () => retryable,
+      markProcessed: async (data: unknown) => {
+        markProcessedCalls.push(data);
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).connectionRepository = {
+      findByIdOnly: async (id: number) => ({ id, gmailLabelId: 'Label_1', userId: 1 }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).emailConnectionService = {
+      getOAuth2Client: async () => ({}),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).fetchAndProcessMessage = async (_gmail: unknown, connectionId: number, messageId: string) => {
+      fetchCalls.push({ connectionId, messageId });
+      return null;
+    };
+
+    return { service, fetchCalls, markProcessedCalls };
+  }
+
+  test('groups retryable messages by connection and reprocesses each one', async () => {
+    const { service, fetchCalls } = makeService([
+      { connectionId: 1, gmailMessageId: 'msg-a' },
+      { connectionId: 1, gmailMessageId: 'msg-b' },
+      { connectionId: 2, gmailMessageId: 'msg-c' },
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).sweepRetryableMessages();
+
+    assert.equal(fetchCalls.length, 3);
+    assert.deepEqual(
+      fetchCalls.filter((c) => c.connectionId === 1).map((c) => c.messageId).sort(),
+      ['msg-a', 'msg-b'],
+    );
+    assert.deepEqual(
+      fetchCalls.filter((c) => c.connectionId === 2).map((c) => c.messageId),
+      ['msg-c'],
+    );
+  });
+
+  test('does nothing when there are no retryable messages', async () => {
+    const { service, fetchCalls } = makeService([]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).sweepRetryableMessages();
+
+    assert.equal(fetchCalls.length, 0);
+  });
+
+  test('a per-message failure marks it failed but does not stop the rest of the sweep', async () => {
+    const { service, fetchCalls, markProcessedCalls } = makeService([
+      { connectionId: 1, gmailMessageId: 'msg-fails' },
+      { connectionId: 1, gmailMessageId: 'msg-ok' },
+    ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).fetchAndProcessMessage = async (_gmail: unknown, connectionId: number, messageId: string) => {
+      fetchCalls.push({ connectionId, messageId });
+      if (messageId === 'msg-fails') throw new Error('boom');
+      return null;
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).sweepRetryableMessages();
+
+    assert.equal(fetchCalls.length, 2, 'both messages should have been attempted');
+    assert.equal(markProcessedCalls.length, 1, 'only the failing message gets marked failed');
+  });
+
+  test('skips a connection with no Gmail label configured', async () => {
+    const { service, fetchCalls } = makeService([{ connectionId: 1, gmailMessageId: 'msg-a' }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).connectionRepository = {
+      findByIdOnly: async (id: number) => ({ id, gmailLabelId: null, userId: 1 }),
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (service as any).sweepRetryableMessages();
+
+    assert.equal(fetchCalls.length, 0);
+  });
+});

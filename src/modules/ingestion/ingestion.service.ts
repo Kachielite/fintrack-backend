@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { google } from 'googleapis';
+import { google, gmail_v1 } from 'googleapis';
 import logger from '@/common/lib/logger';
 import syncEventBus from '@/common/lib/sync-event-bus';
 import { IIngestionRepository } from './ingestion.repository';
@@ -70,6 +70,12 @@ const INGESTION_DATE_SANITY_TOLERANCE_DAYS = 3;
 // Kept low and off the critical path since every sampled match costs an AI
 // call. See fintrack-backend#163.
 const SHADOW_VERIFY_SAMPLE_RATE = 0.08;
+// Bounds one sweep run so a huge retryable backlog doesn't turn a single cron
+// tick into an unbounded run - the rest just waits for the next tick. Paced
+// like a manual poll's message loop, not drained in a dense burst. See
+// fintrack-backend#168.
+const RETRYABLE_SWEEP_BATCH_SIZE = 100;
+const RETRYABLE_SWEEP_PACING_MS = 400;
 // Onboarding tells free-tier users we're scanning "the last 2 months" (their
 // retention window, see user.constants.ts). Nothing previously enforced any
 // bound at all, so a manual/backfill poll would walk a label's entire history
@@ -182,6 +188,14 @@ export interface IIngestionService {
   ): Promise<void>;
   enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
   reconcileFailedBackfill(connectionId: number): Promise<void>;
+  /**
+   * Re-fetches and reprocesses messages still marked retryable (e.g. a
+   * rate-limited extraction), directly by gmailMessageId rather than waiting
+   * for a poll to happen to re-list them - cron only lists the newest 50
+   * messages per label, so a message deep in a backfill could otherwise wait
+   * indefinitely for the user to manually sync. See fintrack-backend#168.
+   */
+  sweepRetryableMessages(): Promise<void>;
   processMessage(
     connectionId: number,
     messageId: string,
@@ -259,6 +273,52 @@ class IngestionService implements IIngestionService {
       this.pollConnection(connectionId, source).catch((err) =>
         logger.error(`[Ingestion] Direct poll failed for connection ${connectionId} - ${err}`),
       );
+    }
+  }
+
+  async sweepRetryableMessages(): Promise<void> {
+    const retryable = await this.ingestionRepository.findRetryableEmails(RETRYABLE_SWEEP_BATCH_SIZE);
+    if (retryable.length === 0) return;
+    logger.info(`[Ingestion] Retryable sweep: ${retryable.length} message(s) to reprocess`);
+
+    const byConnection = new Map<number, string[]>();
+    for (const { connectionId, gmailMessageId } of retryable) {
+      const list = byConnection.get(connectionId) ?? [];
+      list.push(gmailMessageId);
+      byConnection.set(connectionId, list);
+    }
+
+    for (const [connectionId, messageIds] of byConnection) {
+      try {
+        const connection = await this.connectionRepository.findByIdOnly(connectionId);
+        if (!connection || !connection.gmailLabelId) continue;
+        const oauth2Client = await this.emailConnectionService.getOAuth2Client(connection);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+        for (const messageId of messageIds) {
+          try {
+            await this.fetchAndProcessMessage(gmail, connectionId, messageId);
+          } catch (err) {
+            if (err instanceof GmailAuthRevokedError) {
+              logger.warn(
+                `[Ingestion] Retryable sweep: connection ${connectionId} requires re-auth, skipping its remaining retryable messages`,
+              );
+              break;
+            }
+            logger.error(`[Ingestion] Retryable sweep failed for connection ${connectionId} message ${messageId} - ${err}`);
+            // Matches pollConnection's per-message catch: mark failed without
+            // touching retryCount, rather than silently dropping the message.
+            await this.ingestionRepository.markProcessed({
+              emailConnectionId: connectionId,
+              gmailMessageId: messageId,
+              outcome: 'failed',
+            });
+          }
+          await delay(RETRYABLE_SWEEP_PACING_MS);
+        }
+      } catch (err) {
+        logger.error(`[Ingestion] Retryable sweep failed to set up connection ${connectionId} - ${err}`);
+      }
     }
   }
 
@@ -410,24 +470,7 @@ class IngestionService implements IIngestionService {
         attemptedIndex++;
 
         try {
-          const msgResp = await gmail.users.messages.get({
-            userId: 'me',
-            id: msg.id,
-            format: 'full',
-          });
-
-          const headers = msgResp.data.payload?.headers || [];
-          const fromHeader = headers.find((h) => h.name?.toLowerCase() === 'from');
-          const subjectHeader = headers.find((h) => h.name?.toLowerCase() === 'subject');
-          const from = fromHeader?.value || '';
-          const subject = subjectHeader?.value || '';
-          const body = this.extractEmailBody(msgResp.data.payload);
-          const internalDateMs = Number(msgResp.data.internalDate);
-          const receivedAt = Number.isFinite(internalDateMs) && internalDateMs > 0
-            ? new Date(internalDateMs)
-            : new Date();
-
-          const processed = await this.processMessage(connectionId, msg.id, body, subject, from, receivedAt);
+          const processed = await this.fetchAndProcessMessage(gmail, connectionId, msg.id);
           if (processed) {
             processedCount++;
             processedTransactions.push(processed);
@@ -1715,6 +1758,36 @@ class IngestionService implements IIngestionService {
   private extractEmail(from: string): string {
     const match = from.match(/<(.+)>/);
     return (match ? match[1] : from).toLowerCase().trim();
+  }
+
+  /**
+   * Fetches a single message by id and runs it through processMessage - shared
+   * by pollConnection's listing loop and the retryable sweep (fintrack-backend#168),
+   * which fetches directly by id instead of re-listing.
+   */
+  private async fetchAndProcessMessage(
+    gmail: gmail_v1.Gmail,
+    connectionId: number,
+    messageId: string,
+  ): Promise<ProcessedTransaction | null> {
+    const msgResp = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'full',
+    });
+
+    const headers = msgResp.data.payload?.headers || [];
+    const fromHeader = headers.find((h) => h.name?.toLowerCase() === 'from');
+    const subjectHeader = headers.find((h) => h.name?.toLowerCase() === 'subject');
+    const from = fromHeader?.value || '';
+    const subject = subjectHeader?.value || '';
+    const body = this.extractEmailBody(msgResp.data.payload);
+    const internalDateMs = Number(msgResp.data.internalDate);
+    const receivedAt = Number.isFinite(internalDateMs) && internalDateMs > 0
+      ? new Date(internalDateMs)
+      : new Date();
+
+    return this.processMessage(connectionId, messageId, body, subject, from, receivedAt);
   }
 
   private extractEmailBody(payload: any): string {
