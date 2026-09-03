@@ -1462,31 +1462,38 @@ class IngestionService implements IIngestionService {
     const cleaned = raw.replace(/\./g, '').trim();
     if (!cleaned) return null;
 
-    const parsed = new Date(cleaned);
-    if (!isNaN(parsed.getTime())) return parsed;
-
+    // Slash/dash-separated dates are ambiguous (dd/mm vs mm/dd), and Nigerian
+    // bank alerts commonly use day-first. Try the explicit day-first parser
+    // before the native Date constructor: native Date() happily parses e.g.
+    // "04/05/2025" as April 5 (US month-first) instead of 4 May, and it never
+    // gets a chance to be corrected below since a successful native parse used
+    // to return immediately. Any day 1-12 was silently getting its day and
+    // month swapped. See fintrack-backend#161.
     const slash = cleaned.match(
       /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
     );
-    if (!slash) return null;
+    if (slash) {
+      let day = Number(slash[1]);
+      let month = Number(slash[2]);
+      const yearRaw = Number(slash[3]);
+      const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+      const hour = Number(slash[4] ?? 0);
+      const minute = Number(slash[5] ?? 0);
+      const second = Number(slash[6] ?? 0);
 
-    let day = Number(slash[1]);
-    let month = Number(slash[2]);
-    const yearRaw = Number(slash[3]);
-    const year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
-    const hour = Number(slash[4] ?? 0);
-    const minute = Number(slash[5] ?? 0);
-    const second = Number(slash[6] ?? 0);
+      // Default to day-first for common NG bank formats.
+      if (day <= 12 && month > 12) {
+        const temp = day;
+        day = month;
+        month = temp;
+      }
 
-    // Default to day-first for common NG bank formats.
-    if (day <= 12 && month > 12) {
-      const temp = day;
-      day = month;
-      month = temp;
+      const normalized = new Date(year, month - 1, day, hour, minute, second);
+      if (!isNaN(normalized.getTime())) return normalized;
     }
 
-    const normalized = new Date(year, month - 1, day, hour, minute, second);
-    return isNaN(normalized.getTime()) ? null : normalized;
+    const parsed = new Date(cleaned);
+    return isNaN(parsed.getTime()) ? null : parsed;
   }
 
   private isMidnight(parsed: Date, raw: string | undefined): boolean {
