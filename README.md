@@ -86,6 +86,9 @@ GMAIL_POLL_INTERVAL_MINUTES=15            # default: 15
 # Regex engine threshold — demotes a production template back to candidate
 # once real usage data shows its live confidence has fallen below this
 REGEX_REAUDIT_THRESHOLD=0.60             # default: 0.60
+
+# Per-connection daily cap on AI extraction calls — a cost circuit breaker
+INGESTION_DAILY_AI_CALL_CAP=300          # default: 300
 ```
 
 ---

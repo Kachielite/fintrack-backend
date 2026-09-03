@@ -141,6 +141,13 @@
       "when": 1788644400000,
       "tag": "0019_parser_template_recent_fail_streak",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788731000000,
+      "tag": "0020_email_connection_ai_call_cap",
+      "breakpoints": true
     }
   ]
 }
