@@ -24,7 +24,8 @@
     "test:transfer-detection-service": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/transfer-detection-service.test.ts",
     "test:transaction-transfer": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/transaction-transfer.test.ts",
     "test:ingestion-backfill": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/ingestion-backfill.test.ts",
-    "test:parser-rule-demotion": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-demotion.test.ts"
+    "test:parser-rule-demotion": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-demotion.test.ts",
+    "test:regex-sandbox": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/regex-sandbox.test.ts"
   },
   "keywords": [],
   "author": "",
