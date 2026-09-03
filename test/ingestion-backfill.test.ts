@@ -97,13 +97,58 @@ describe('resolveTransactionDate', () => {
   test('prefers a labeled date found in the email body over receivedAt', () => {
     const service = makeBareIngestionService();
     const receivedAt = new Date('2026-07-04T10:00:00Z');
-    const body = 'Transaction Date: 01/05/2026 10:30\nAmount: NGN 5,000';
+    // 2 days before receivedAt - plausible, within fintrack-backend#162's tolerance.
+    const body = 'Transaction Date: 02/07/2026 10:30\nAmount: NGN 5,000';
     const subject = 'Debit Alert';
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = (service as any).resolveTransactionDate(undefined, body, subject, receivedAt);
 
     assert.notEqual(result.getTime(), receivedAt.getTime());
+  });
+
+  test('rejects a future-dated candidate and falls back to receivedAt', () => {
+    const service = makeBareIngestionService();
+    const receivedAt = new Date('2026-07-04T10:00:00Z');
+    // Well beyond the plausibility window ahead of receivedAt - a bank alert
+    // can't report a transaction that hasn't happened yet.
+    const body = 'Transaction Date: 15/09/2026 10:00\nAmount: NGN 5,000';
+    const subject = 'Debit Alert';
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).resolveTransactionDate(undefined, body, subject, receivedAt);
+
+    assert.equal(result.getTime(), receivedAt.getTime());
+  });
+
+  test('rejects a candidate implausibly far in the past and falls back to receivedAt', () => {
+    const service = makeBareIngestionService();
+    const receivedAt = new Date('2026-07-04T10:00:00Z');
+    // A regex/AI grab on a stray old date (footer, copyright, unrelated promo
+    // text) years before the email actually arrived.
+    const body = 'Transaction Date: 01/01/2020 10:00\nAmount: NGN 5,000';
+    const subject = 'Debit Alert';
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).resolveTransactionDate(undefined, body, subject, receivedAt);
+
+    assert.equal(result.getTime(), receivedAt.getTime());
+  });
+
+  test('accepts a candidate within the plausibility tolerance of receivedAt', () => {
+    const service = makeBareIngestionService();
+    const receivedAt = new Date('2026-07-04T10:00:00Z');
+    // One day before receivedAt - well within tolerance, should be accepted as-is.
+    const body = 'Transaction Date: 03/07/2026 09:00\nAmount: NGN 5,000';
+    const subject = 'Debit Alert';
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (service as any).resolveTransactionDate(undefined, body, subject, receivedAt);
+
+    assert.notEqual(result.getTime(), receivedAt.getTime());
+    assert.equal(result.getFullYear(), 2026);
+    assert.equal(result.getMonth(), 6); // July
+    assert.equal(result.getDate(), 3);
   });
 });
 

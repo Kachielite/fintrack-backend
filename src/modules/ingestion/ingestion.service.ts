@@ -56,6 +56,12 @@ const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
 const INGESTION_BACKFILL_CHUNK_SIZE = 15;
 const INGESTION_BACKFILL_CHUNK_DELAY_MS = 60 * 1000;
 const INGESTION_MESSAGE_PACING_MS = 400;
+// Bank alert emails are near-real-time, so a resolved transaction date should
+// land close to when the email was actually received. A candidate outside this
+// window (a regex/AI grab on a footer date, a copyright year, an unrelated
+// promo date, ...) is almost always wrong, not a legitimately old transaction.
+// See fintrack-backend#162.
+const INGESTION_DATE_SANITY_TOLERANCE_DAYS = 3;
 // Onboarding tells free-tier users we're scanning "the last 2 months" (their
 // retention window, see user.constants.ts). Nothing previously enforced any
 // bound at all, so a manual/backfill poll would walk a label's entire history
@@ -1406,9 +1412,17 @@ class IngestionService implements IIngestionService {
     return transactionType === TransactionTypeEnum.DEBIT ? -absAmount : absAmount;
   }
 
+  private isPlausibleTransactionDate(candidate: Date, receivedAt: Date): boolean {
+    const toleranceMs = INGESTION_DATE_SANITY_TOLERANCE_DAYS * 24 * 60 * 60 * 1000;
+    const diff = candidate.getTime() - receivedAt.getTime();
+    return diff <= toleranceMs && diff >= -toleranceMs;
+  }
+
   private resolveTransactionDate(value: string | undefined, body: string, subject: string, receivedAt: Date): Date {
     const primary = this.parseDateCandidate(value);
-    if (primary && !this.isMidnight(primary, value)) return primary;
+    if (primary && !this.isMidnight(primary, value) && this.isPlausibleTransactionDate(primary, receivedAt)) {
+      return primary;
+    }
 
     const combined = `${subject}\n${body}`;
 
@@ -1422,41 +1436,46 @@ class IngestionService implements IIngestionService {
       'value\\s+date',
     ]);
     const labeledDate = this.parseDateCandidate(labeled);
-    if (labeledDate) return labeledDate;
+    if (labeledDate && this.isPlausibleTransactionDate(labeledDate, receivedAt)) return labeledDate;
 
     // 2. Loose dd/mm/yyyy or dd-mm-yyyy with optional time
     const looseMatch = combined.match(
       /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/,
     )?.[0];
     const looseDate = this.parseDateCandidate(looseMatch);
-    if (looseDate) return looseDate;
+    if (looseDate && this.isPlausibleTransactionDate(looseDate, receivedAt)) return looseDate;
 
     // 3. Compact date like "01Sep2025", "30Apr2026"
     const MON = 'Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
     const compactMatch = combined.match(new RegExp(`\\b(\\d{1,2})(${MON})(\\d{4})\\b`, 'i'));
     if (compactMatch) {
       const compactDate = this.parseDateCandidate(`${compactMatch[1]} ${compactMatch[2]} ${compactMatch[3]}`);
-      if (compactDate) return compactDate;
+      if (compactDate && this.isPlausibleTransactionDate(compactDate, receivedAt)) return compactDate;
     }
 
     // 4. Full ISO date embedded in text: YYYY-MM-DD
     const isoFullMatch = combined.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/)?.[0];
     const isoFullDate = this.parseDateCandidate(isoFullMatch);
-    if (isoFullDate) return isoFullDate;
+    if (isoFullDate && this.isPlausibleTransactionDate(isoFullDate, receivedAt)) return isoFullDate;
 
     // 5. Year-month only: YYYY-MM (e.g. "Credit Interest for 2025-12") → last day of that month
     const yearMonthMatch = combined.match(/\b(20\d{2})-(0[1-9]|1[0-2])\b/);
     if (yearMonthMatch) {
       const year = Number(yearMonthMatch[1]);
       const month = Number(yearMonthMatch[2]);
-      return new Date(year, month, 0); // day 0 of month+1 = last day of month
+      const yearMonthDate = new Date(year, month, 0); // day 0 of month+1 = last day of month
+      if (this.isPlausibleTransactionDate(yearMonthDate, receivedAt)) return yearMonthDate;
     }
 
-    if (primary) return primary;
-    // No date found anywhere in the extracted text: fall back to the email's own
-    // received timestamp (Gmail internalDate), not the moment we happen to be
-    // processing it. For a backfill, "now" would silently mislabel old transactions
-    // as happening today. See fintrack-backend#158.
+    // primary is revisited here (even though it may have already failed the
+    // midnight/plausibility check above) as a last resort ahead of receivedAt -
+    // but still has to pass the same plausibility check, since an implausible
+    // date is worse than no date at all.
+    if (primary && this.isPlausibleTransactionDate(primary, receivedAt)) return primary;
+    // No plausible date found anywhere in the extracted text: fall back to the
+    // email's own received timestamp (Gmail internalDate), not the moment we
+    // happen to be processing it. For a backfill, "now" would silently mislabel
+    // old transactions as happening today. See fintrack-backend#158.
     return receivedAt;
   }
 
