@@ -159,6 +159,14 @@ const BLUEPRINT_DRIFT_REPLACE_THRESHOLD = 2;
 // Require a minimum number of real applications before the score is trusted enough
 // to act on. See fintrack-backend#154.
 const REGEX_DEMOTION_MIN_SAMPLES = 5;
+// matchCount/failCount are lifetime cumulative, so a template with a long
+// healthy history barely moves the score on a handful of new failures - a
+// bank redesigning its email format (every subsequent match now fails) could
+// mismatch forever under the lifetime-average check alone. This tracks
+// consecutive failures since the last match instead, independent of history
+// length, and demotes as soon as the streak looks like a real format change
+// rather than noise. See fintrack-backend#165.
+const REGEX_ROLLING_DEMOTION_FAIL_STREAK = 5;
 
 @injectable()
 class ParserRuleService implements IParserRuleService {
@@ -340,13 +348,21 @@ Return JSON only in this exact format:
 
   async bulkReauditFailed(): Promise<BulkReauditResult> {
     const failed = await this.repository.findTemplatesByStatus(RuleStatusEnum.FAILED_AUDIT);
-    logger.info(`[ParserRule] Bulk re-audit: ${failed.length} failed templates`);
+    // Templates demoted from production by recordFailure (lifetime score or
+    // fintrack-backend#165's rolling fail-streak) sit at CANDIDATE with no
+    // automatic path back to re-audit otherwise - swept here alongside
+    // failed_audit templates since both need a fresh audit attempt.
+    const demoted = await this.repository.findDemotedTemplates();
+    const templates = [...failed, ...demoted];
+    logger.info(
+      `[ParserRule] Bulk re-audit: ${failed.length} failed templates, ${demoted.length} demoted templates`,
+    );
 
     let promoted = 0;
     let stillFailed = 0;
     let errors = 0;
 
-    for (const template of failed) {
+    for (const template of templates) {
       try {
         const result = await this.auditTemplate(template.id);
         if (result.passed) promoted++;
@@ -360,7 +376,7 @@ Return JSON only in this exact format:
     }
 
     logger.info(`[ParserRule] Bulk re-audit done: promoted=${promoted}, failed=${stillFailed}, errors=${errors}`);
-    return { total: failed.length, promoted, stillFailed, errors };
+    return { total: templates.length, promoted, stillFailed, errors };
   }
 
   async promoteTemplate(id: number): Promise<ParserTemplateResponseDTO> {
@@ -1128,6 +1144,9 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
       if (!template) return;
       const newMatchCount = template.matchCount + 1;
       await this.repository.updateTemplateConfidence(templateId, newMatchCount, template.failCount);
+      if (template.recentFailStreak !== 0) {
+        await this.repository.updateRecentFailStreak(templateId, 0);
+      }
     } catch (error) {
       logger.error(`Error recording match for template ${templateId} - ${error}`);
     }
@@ -1141,10 +1160,24 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
       await this.repository.updateTemplateConfidence(templateId, template.matchCount, newFailCount);
       await this.repository.updateTemplateLastFailed(templateId);
 
+      const newStreak = template.recentFailStreak + 1;
+      await this.repository.updateRecentFailStreak(templateId, newStreak);
+
       const totalSamples = template.matchCount + newFailCount;
       const newScore = template.matchCount / (template.matchCount + newFailCount * 2) || 0;
-      if (totalSamples >= REGEX_DEMOTION_MIN_SAMPLES && newScore < CONSTANTS.REGEX_REAUDIT_THRESHOLD) {
-        await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.CANDIDATE, 'Score fell below reaudit threshold');
+      const lifetimeScoreDegraded =
+        totalSamples >= REGEX_DEMOTION_MIN_SAMPLES && newScore < CONSTANTS.REGEX_REAUDIT_THRESHOLD;
+      // Independent of the lifetime-average check above: a template that was
+      // fine for months but has failed every attempt since its last match
+      // shouldn't have to wait for enough failures to drag its lifetime score
+      // down. See fintrack-backend#165.
+      const recentStreakDegraded = newStreak >= REGEX_ROLLING_DEMOTION_FAIL_STREAK;
+
+      if (lifetimeScoreDegraded || recentStreakDegraded) {
+        const reason = recentStreakDegraded
+          ? `${newStreak} consecutive failures - email format may have changed`
+          : 'Score fell below reaudit threshold';
+        await this.repository.updateTemplateStatus(templateId, RuleStatusEnum.CANDIDATE, reason);
       }
     } catch (error) {
       logger.error(`Error recording failure for template ${templateId} - ${error}`);

@@ -134,6 +134,13 @@
       "when": 1788558000000,
       "tag": "0018_parser_template_format_signature",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788644400000,
+      "tag": "0019_parser_template_recent_fail_streak",
+      "breakpoints": true
     }
   ]
 }
