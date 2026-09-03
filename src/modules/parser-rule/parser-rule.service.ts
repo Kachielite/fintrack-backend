@@ -108,8 +108,20 @@ export interface IParserRuleService {
     emailBody: string,
     emailSubject: string,
   ): Promise<IParserTemplate>;
-  /** Any template row at all for this bank, regardless of status — see fintrack-backend#140. */
-  hasExistingTemplate(bankId: number): Promise<boolean>;
+  /**
+   * Any template row for this bank and this email's format, regardless of
+   * status (fintrack-backend#140). Scoped per-format, not just per-bank, so a
+   * bank's other email shapes each still get their own generation attempt
+   * (fintrack-backend#160).
+   */
+  hasExistingTemplate(bankId: number, emailSubject: string, emailBody: string): Promise<boolean>;
+  /**
+   * Public wrapper around the same fingerprint hasExistingTemplate/generateTemplate
+   * use internally, so callers (ingestion.service.ts's in-flight/cooldown guards)
+   * can key per-format state with the exact same identity the DB check uses,
+   * rather than approximating it separately.
+   */
+  computeFormatSignature(emailSubject: string, emailBody: string): string;
   identifyBank(
     senderEmail: string,
     emailSubject: string,
@@ -571,8 +583,13 @@ If this is not a transaction notification, return { "is_transaction": false }.`,
     }
   }
 
-  async hasExistingTemplate(bankId: number): Promise<boolean> {
-    return this.repository.hasAnyTemplateForBank(bankId);
+  async hasExistingTemplate(bankId: number, emailSubject: string, emailBody: string): Promise<boolean> {
+    const formatSignature = this.buildFormatSignature(emailSubject, emailBody);
+    return this.repository.hasTemplateForBankAndSignature(bankId, formatSignature);
+  }
+
+  computeFormatSignature(emailSubject: string, emailBody: string): string {
+    return this.buildFormatSignature(emailSubject, emailBody);
   }
 
   async generateTemplate(
@@ -646,6 +663,7 @@ Return JSON:
         bankId,
         description: raw.description,
         emailSubjectPattern: raw.subject_pattern,
+        formatSignature: this.buildFormatSignature(emailSubject, emailBody),
       });
 
       // Collect all texts to test against: existing blueprints + current email

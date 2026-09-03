@@ -180,8 +180,11 @@ export interface IIngestionService {
 
 @injectable()
 class IngestionService implements IIngestionService {
-  private templateGenerationInFlight = new Set<number>();
-  private templateGenerationCooldownUntil = new Map<number, number>();
+  // Keyed by `${bankId}:${formatSignature}`, not bare bankId, so one format's
+  // in-flight generation or rate-limit cooldown doesn't block a different
+  // format from the same bank (fintrack-backend#160).
+  private templateGenerationInFlight = new Set<string>();
+  private templateGenerationCooldownUntil = new Map<string, number>();
   private categoryCache: { categories: ICategory[]; expiresAt: number } | null = null;
 
   constructor(
@@ -1676,24 +1679,30 @@ class IngestionService implements IIngestionService {
     emailSubject: string,
     senderConfidence?: BankIdentificationSource,
   ): void {
+    const formatSignature = this.parserRuleService.computeFormatSignature(emailSubject, emailBody);
+    const guardKey = `${bankId}:${formatSignature}`;
+
     const now = Date.now();
-    const cooldownUntil = this.templateGenerationCooldownUntil.get(bankId) || 0;
-    if (this.templateGenerationInFlight.has(bankId) || cooldownUntil > now) {
+    const cooldownUntil = this.templateGenerationCooldownUntil.get(guardKey) || 0;
+    if (this.templateGenerationInFlight.has(guardKey) || cooldownUntil > now) {
       return;
     }
 
-    this.templateGenerationInFlight.add(bankId);
+    this.templateGenerationInFlight.add(guardKey);
     setImmediate(() => {
       this.parserRuleService
-        .hasExistingTemplate(bankId)
+        .hasExistingTemplate(bankId, emailSubject, emailBody)
         .then((exists) => {
           if (exists) {
-            // A prior attempt already created a template for this bank (candidate,
-            // audited, production, or failed_audit) — a burst of further same-bank
-            // emails during a backfill shouldn't each mint their own near-duplicate
-            // template. Manual regeneration (e.g. the admin "Generate" action) can
-            // still create a new one intentionally; this only guards the automatic
-            // per-email trigger. See fintrack-backend#140.
+            // A prior attempt already created a template for this bank AND this
+            // email format (candidate, audited, production, or failed_audit) — a
+            // burst of further same-format emails during a backfill shouldn't
+            // each mint their own near-duplicate template. Manual regeneration
+            // (e.g. the admin "Generate" action) can still create a new one
+            // intentionally; this only guards the automatic per-email trigger.
+            // Scoped per format, not per bank, so a bank's other email shapes
+            // still each get their own generation attempt. See
+            // fintrack-backend#140, fintrack-backend#160.
             return null;
           }
           return this.parserRuleService
@@ -1701,20 +1710,20 @@ class IngestionService implements IIngestionService {
             .then((template) => this.parserRuleService.auditTemplate(template.id, senderConfidence));
         })
         .then(() => {
-          this.templateGenerationCooldownUntil.delete(bankId);
+          this.templateGenerationCooldownUntil.delete(guardKey);
         })
         .catch((err) => {
           if (this.isRateLimitError(err)) {
-            this.templateGenerationCooldownUntil.set(bankId, Date.now() + TEMPLATE_RETRY_COOLDOWN_MS);
+            this.templateGenerationCooldownUntil.set(guardKey, Date.now() + TEMPLATE_RETRY_COOLDOWN_MS);
             logger.warn(
-              `Template generation rate-limited for bank ${bankId}; pausing retries for ${TEMPLATE_RETRY_COOLDOWN_MS / 1000}s`,
+              `Template generation rate-limited for bank ${bankId} (format ${formatSignature}); pausing retries for ${TEMPLATE_RETRY_COOLDOWN_MS / 1000}s`,
             );
             return;
           }
-          logger.error(`Background template generation failed for bank ${bankId} - ${err}`);
+          logger.error(`Background template generation failed for bank ${bankId} (format ${formatSignature}) - ${err}`);
         })
         .finally(() => {
-          this.templateGenerationInFlight.delete(bankId);
+          this.templateGenerationInFlight.delete(guardKey);
         });
     });
   }

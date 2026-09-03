@@ -32,6 +32,12 @@ export const ParserTemplateSchema = pgTable('parser_templates', {
   version: integer('version').default(1).notNull(),
   description: text('description'),
   emailSubjectPattern: text('email_subject_pattern'),
+  // Same fingerprint as bank_email_blueprints.formatSignature (buildFormatSignature
+  // in parser-rule.service.ts), computed from the triggering email's raw subject
+  // and body labels. Lets a bank hold one template per distinct email shape
+  // (debit alert, credit alert, interbank transfer, ...) instead of exactly one
+  // template ever, which was the generation gate before fintrack-backend#160.
+  formatSignature: text('format_signature'),
   status: text('status').default('candidate').notNull(),
   confidenceScore: real('confidence_score').default(0).notNull(),
   matchCount: integer('match_count').default(0).notNull(),
