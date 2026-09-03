@@ -149,7 +149,12 @@ function formatAmount(amount: number, currency: string): string {
 
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
-  pollConnection(connectionId: number, source?: TriggerSource, pageToken?: string): Promise<void>;
+  pollConnection(
+    connectionId: number,
+    source?: TriggerSource,
+    pageToken?: string,
+    backfillCutoffDate?: string,
+  ): Promise<void>;
   enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
   processMessage(
     connectionId: number,
@@ -236,22 +241,36 @@ class IngestionService implements IIngestionService {
    * Carries the Gmail pageToken forward so the next chunk actually continues
    * from where this one left off, instead of re-fetching the same first page.
    */
-  private scheduleNextPollChunk(connectionId: number, source: TriggerSource, pageToken: string): void {
+  private scheduleNextPollChunk(
+    connectionId: number,
+    source: TriggerSource,
+    pageToken: string,
+    backfillCutoffDate: string,
+  ): void {
     const queue = getIngestionQueue();
     if (queue) {
       queue
-        .add('poll', { connectionId, source, pageToken }, { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 })
+        .add(
+          'poll',
+          { connectionId, source, pageToken, backfillCutoffDate },
+          { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 },
+        )
         .catch((err) => logger.error(`[Ingestion] Failed to schedule next chunk for connection ${connectionId} - ${err}`));
     } else {
       setTimeout(() => {
-        this.pollConnection(connectionId, source, pageToken).catch((err) =>
+        this.pollConnection(connectionId, source, pageToken, backfillCutoffDate).catch((err) =>
           logger.error(`[Ingestion] Direct chunked poll failed for connection ${connectionId} - ${err}`),
         );
       }, INGESTION_BACKFILL_CHUNK_DELAY_MS);
     }
   }
 
-  async pollConnection(connectionId: number, source: TriggerSource = 'cron', pageToken?: string): Promise<void> {
+  async pollConnection(
+    connectionId: number,
+    source: TriggerSource = 'cron',
+    pageToken?: string,
+    backfillCutoffDate?: string,
+  ): Promise<void> {
     const channel = `sync:${connectionId}`;
     const emit = (event: string, data: unknown) =>
       syncEventBus.emit(channel, { event, data });
@@ -285,13 +304,20 @@ class IngestionService implements IIngestionService {
       // cron cadence and pace the remainder via a delayed follow-up instead of
       // draining everything in one dense burst. See fintrack-backend#137.
       const isManualPoll = source === 'manual';
-      const backfillCutoff = new Date(Date.now() - INGESTION_BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+      // Pinned on this run's first chunk (pageToken absent) and carried forward
+      // unchanged on every follow-up — a pageToken is only valid for the exact
+      // query that produced it, so recomputing "N days ago" fresh on each chunk
+      // would silently change the query mid-pagination the moment a run crosses
+      // a day boundary. See fintrack-backend#158.
+      const resolvedCutoffDate =
+        backfillCutoffDate ??
+        formatGmailAfterDate(new Date(Date.now() - INGESTION_BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000));
       const listResp = await gmail.users.messages.list({
         userId: 'me',
         labelIds: [connection.gmailLabelId],
         maxResults: isManualPoll ? INGESTION_BACKFILL_CHUNK_SIZE : 50,
         pageToken,
-        ...(isManualPoll ? { q: `after:${formatGmailAfterDate(backfillCutoff)}` } : {}),
+        ...(isManualPoll ? { q: `after:${resolvedCutoffDate}` } : {}),
       });
 
       const messages = listResp.data.messages || [];
@@ -377,7 +403,7 @@ class IngestionService implements IIngestionService {
 
       if (hasMoreBacklog && nextPageToken) {
         logger.info(`[Ingestion] Chunk complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages — scheduling next chunk in ${INGESTION_BACKFILL_CHUNK_DELAY_MS / 1000}s`);
-        this.scheduleNextPollChunk(connectionId, source, nextPageToken);
+        this.scheduleNextPollChunk(connectionId, source, nextPageToken, resolvedCutoffDate);
       } else {
         logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
       }
