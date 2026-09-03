@@ -960,6 +960,18 @@ components:
             templates_added_30d: { type: integer, example: 2 }
             templates_modified_30d: { type: integer, example: 5 }
             templates_deprecated_30d: { type: integer, example: 0 }
+            by_connection:
+              type: array
+              items:
+                type: object
+                properties:
+                  connection_id: { type: integer, example: 12 }
+                  gmail_address: { type: string, example: user@gmail.com }
+                  tx_count: { type: integer, example: 45 }
+                  regex_count: { type: integer, example: 40 }
+                  ai_count: { type: integer, example: 5 }
+                  ai_share_pct: { type: number, example: 11.1 }
+                  alert: { type: boolean, example: false }
 
     AdminRegexTemplateList:
       type: object

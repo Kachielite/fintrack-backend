@@ -91,6 +91,18 @@ export interface IAdminRepository {
     productionTemplates: number; avgConfidence: number;
     txCount30d: number; regexCount30d: number; correctionCount: number;
   }[]>;
+  /**
+   * Per-connection (not per-bank) regex-vs-AI split over a recent window - the
+   * bank-aggregated view above wouldn't have caught the September incident,
+   * since it was one connection's runaway backfill, not a bank-wide issue. A
+   * short window (hours, not the 30-day dashboard window) so a spike is
+   * visible the same day it starts, not diluted into a monthly average.
+   * See fintrack-backend#169.
+   */
+  getConnectionRegexStats(windowHours: number): Promise<{
+    connectionId: number; userId: number; gmailAddress: string;
+    txCount: number; regexCount: number; aiCount: number;
+  }[]>;
   getTemplateActivity(from: Date, to: Date): Promise<{ added: number; modified: number; deprecated: number }>;
   getTemplateList(query: {
     page: number; limit: number; status?: string; bankId?: number;
@@ -372,6 +384,34 @@ export class AdminRepositoryImpl implements IAdminRepository {
       txCount30d: Number(r.tx_count_30d),
       regexCount30d: Number(r.regex_count_30d),
       correctionCount: Number(r.correction_count),
+    }));
+  }
+
+  async getConnectionRegexStats(windowHours: number) {
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+    const rows = await this.execMany(sql`
+      SELECT
+        ec.id                                                                   AS connection_id,
+        ec.user_id                                                              AS user_id,
+        ec.gmail_address                                                        AS gmail_address,
+        COUNT(t.id)::int                                                        AS tx_count,
+        COUNT(t.id) FILTER (
+          WHERE t.parser_template_id IS NOT NULL AND t.status = 'verified'
+        )::int                                                                  AS regex_count
+      FROM email_connections ec
+      LEFT JOIN transactions t
+        ON t.email_connection_id = ec.id AND t.created_at >= ${since}
+      WHERE ec.status = 'active'
+      GROUP BY ec.id, ec.user_id, ec.gmail_address
+      HAVING COUNT(t.id) > 0
+    `);
+    return rows.map((r: any) => ({
+      connectionId: Number(r.connection_id),
+      userId: Number(r.user_id),
+      gmailAddress: r.gmail_address,
+      txCount: Number(r.tx_count),
+      regexCount: Number(r.regex_count),
+      aiCount: Number(r.tx_count) - Number(r.regex_count),
     }));
   }
 
