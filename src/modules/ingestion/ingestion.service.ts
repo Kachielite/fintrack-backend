@@ -55,6 +55,18 @@ const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
 const INGESTION_BACKFILL_CHUNK_SIZE = 15;
 const INGESTION_BACKFILL_CHUNK_DELAY_MS = 60 * 1000;
 const INGESTION_MESSAGE_PACING_MS = 400;
+// Onboarding tells the user we're scanning "the last 2 months" — nothing previously
+// enforced that, so a manual/backfill poll would walk a label's entire history via
+// nextPageToken with no end condition. Gmail's `after:` search operator is date-only
+// (no time component), so this is a day-granular cutoff, not a precise timestamp.
+const INGESTION_BACKFILL_WINDOW_DAYS = 60;
+
+function formatGmailAfterDate(date: Date): string {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}/${mm}/${dd}`;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -145,6 +157,7 @@ export interface IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
+    receivedAt?: Date,
   ): Promise<ProcessedTransaction | null>;
 }
 
@@ -272,11 +285,13 @@ class IngestionService implements IIngestionService {
       // cron cadence and pace the remainder via a delayed follow-up instead of
       // draining everything in one dense burst. See fintrack-backend#137.
       const isManualPoll = source === 'manual';
+      const backfillCutoff = new Date(Date.now() - INGESTION_BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       const listResp = await gmail.users.messages.list({
         userId: 'me',
         labelIds: [connection.gmailLabelId],
         maxResults: isManualPoll ? INGESTION_BACKFILL_CHUNK_SIZE : 50,
         pageToken,
+        ...(isManualPoll ? { q: `after:${formatGmailAfterDate(backfillCutoff)}` } : {}),
       });
 
       const messages = listResp.data.messages || [];
@@ -332,8 +347,12 @@ class IngestionService implements IIngestionService {
           const from = fromHeader?.value || '';
           const subject = subjectHeader?.value || '';
           const body = this.extractEmailBody(msgResp.data.payload);
+          const internalDateMs = Number(msgResp.data.internalDate);
+          const receivedAt = Number.isFinite(internalDateMs) && internalDateMs > 0
+            ? new Date(internalDateMs)
+            : new Date();
 
-          const processed = await this.processMessage(connectionId, msg.id, body, subject, from);
+          const processed = await this.processMessage(connectionId, msg.id, body, subject, from, receivedAt);
           if (processed) {
             processedCount++;
             processedTransactions.push(processed);
@@ -469,6 +488,7 @@ class IngestionService implements IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
+    receivedAt: Date = new Date(),
   ): Promise<ProcessedTransaction | null> {
     try {
       const connection = await this.connectionRepository.findByIdOnly(connectionId);
@@ -615,6 +635,7 @@ class IngestionService implements IIngestionService {
           regexResult.date,
           emailBody,
           emailSubject,
+          receivedAt,
         );
         const rawMerchant = (regexResult.merchant as string) || undefined;
         let merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
@@ -813,6 +834,7 @@ class IngestionService implements IIngestionService {
         extractedOrFallback.date,
         emailBody,
         emailSubject,
+        receivedAt,
       );
       const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
         userId,
@@ -1286,7 +1308,7 @@ class IngestionService implements IIngestionService {
     return isNaN(parsed.getTime()) ? new Date() : parsed;
   }
 
-  private resolveTransactionDate(value: string | undefined, body: string, subject: string): Date {
+  private resolveTransactionDate(value: string | undefined, body: string, subject: string, receivedAt: Date): Date {
     const primary = this.parseDateCandidate(value);
     if (primary && !this.isMidnight(primary, value)) return primary;
 
@@ -1333,7 +1355,11 @@ class IngestionService implements IIngestionService {
     }
 
     if (primary) return primary;
-    return new Date();
+    // No date found anywhere in the extracted text — fall back to the email's own
+    // received timestamp (Gmail internalDate), not the moment we happen to be
+    // processing it. For a backfill, "now" would silently mislabel old transactions
+    // as happening today. See fintrack-backend#158.
+    return receivedAt;
   }
 
   private parseDateCandidate(raw: string | undefined): Date | null {
