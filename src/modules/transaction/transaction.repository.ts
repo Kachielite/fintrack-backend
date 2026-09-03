@@ -127,9 +127,10 @@ class TransactionRepositoryImpl implements ITransactionRepository {
   async findAll(filter: ITransactionFilter): Promise<IPagination<ITransaction>> {
     const conditions = [eq(TransactionSchema.userId, filter.userId)];
 
-    if (filter.category) conditions.push(eq(TransactionSchema.category, filter.category));
-    if (filter.currency) conditions.push(eq(TransactionSchema.currency, filter.currency));
-    if (filter.bankId) conditions.push(eq(TransactionSchema.bankId, filter.bankId));
+    if (filter.category?.length) conditions.push(inArray(TransactionSchema.category, filter.category));
+    if (filter.currency?.length) conditions.push(inArray(TransactionSchema.currency, filter.currency));
+    if (filter.bankId?.length) conditions.push(inArray(TransactionSchema.bankId, filter.bankId));
+    if (filter.accountId?.length) conditions.push(inArray(TransactionSchema.accountId, filter.accountId));
     if (filter.status) conditions.push(eq(TransactionSchema.status, filter.status));
     if (filter.dateFrom) conditions.push(gte(TransactionSchema.transactionDate, filter.dateFrom));
     if (filter.dateTo) conditions.push(lte(TransactionSchema.transactionDate, filter.dateTo));

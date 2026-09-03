@@ -57,9 +57,10 @@ export interface ITransactionFilter {
   userId: number;
   page: number;
   limit: number;
-  category?: string;
-  currency?: string;
-  bankId?: number;
+  category?: string[];
+  currency?: string[];
+  bankId?: number[];
+  accountId?: number[];
   status?: string;
   dateFrom?: Date;
   dateTo?: Date;
