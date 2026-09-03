@@ -2,6 +2,7 @@ export type NotificationType =
   | 'sync_complete'
   | 'sync_skipped'
   | 'sync_failed'
+  | 'sync_paused'
   | 'insight_generated'
   | 'budget_warning'
   | 'budget_exceeded'

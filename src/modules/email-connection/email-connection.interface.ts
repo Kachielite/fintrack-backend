@@ -14,6 +14,8 @@ export interface IEmailConnection {
   lastSyncedAt: Date | null;
   lastSyncMessageCount: number | null;
   backfillPending: boolean;
+  aiExtractionCallsToday: number;
+  aiExtractionCallsResetAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

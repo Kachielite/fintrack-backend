@@ -90,6 +90,13 @@ export const CONSTANTS = {
   // for why a separate confidence-based usage gate was removed.
   REGEX_REAUDIT_THRESHOLD: parseFloat(process.env.REGEX_REAUDIT_THRESHOLD || '0.60'),
 
+  // Per-connection daily cap on AI extraction calls (fintrack-backend#166) — the
+  // September ingestion incident's real damage was unbounded AI spend from one
+  // connection scanning thousands of unfamiliar-format messages. High enough to
+  // never bother a legitimately active user, low enough to cut off a runaway
+  // scenario the same day instead of after it runs all night.
+  INGESTION_DAILY_AI_CALL_CAP: parseInt(process.env.INGESTION_DAILY_AI_CALL_CAP || '300', 10),
+
   FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN || 'http://localhost:3001',
 
   ADMIN_JWT_SECRET: process.env.ADMIN_JWT_SECRET as string,

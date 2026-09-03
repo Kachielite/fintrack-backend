@@ -914,7 +914,32 @@ class IngestionService implements IIngestionService {
         }
       }
 
-      // No production regex template yet — extract directly with AI
+      // No production regex template yet — extract directly with AI. Gated by a
+      // per-connection daily cap: the September ingestion incident's real damage
+      // was unbounded AI spend, and this is the dominant cost path (an unfamiliar
+      // format falls through to AI on every single message). Exceeding the cap
+      // defers the message instead of burning through an unbounded backlog.
+      // See fintrack-backend#166.
+      const aiCallCount = await this.connectionRepository.incrementAiExtractionCallCount(connectionId);
+      if (aiCallCount > CONSTANTS.INGESTION_DAILY_AI_CALL_CAP) {
+        if (aiCallCount === CONSTANTS.INGESTION_DAILY_AI_CALL_CAP + 1) {
+          logger.warn(
+            `[Ingestion] Connection ${connectionId} exceeded its daily AI extraction cap (${CONSTANTS.INGESTION_DAILY_AI_CALL_CAP}); pausing AI extraction for the rest of today`,
+          );
+          this.notificationService
+            .create({
+              userId,
+              type: 'sync_paused',
+              title: 'Sync paused for today',
+              body: "We've hit today's limit for scanning new bank email formats. We'll pick back up tomorrow — transactions from formats we already know keep working normally.",
+              data: { connectionId },
+            })
+            .catch((err) => logger.error(`Failed to send sync_paused notification for connection ${connectionId} - ${err}`));
+        }
+        await this.ingestionRepository.markRetryable(connectionId, messageId);
+        return null;
+      }
+
       let extracted: ParsedTransaction | null;
       let extractionWasRateLimited = false;
       try {
