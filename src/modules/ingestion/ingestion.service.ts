@@ -10,6 +10,7 @@ import { RateLimitedExtractionError, ParsedTransaction } from '@/modules/parser-
 import { ITransactionRepository } from '@/modules/transaction/transaction.repository';
 import { IExchangeRateService } from '@/modules/exchange-rate/exchange-rate.service';
 import { IUserRepository } from '@/modules/user/user.repository';
+import { getRetentionMonthsForPlan } from '@/modules/user/user.constants';
 import EmailConnectionService, {
   IEmailConnectionService,
 } from '@/modules/email-connection/email-connection.service';
@@ -55,6 +56,27 @@ const CATEGORY_CACHE_TTL_MS = 5 * 60 * 1000;
 const INGESTION_BACKFILL_CHUNK_SIZE = 15;
 const INGESTION_BACKFILL_CHUNK_DELAY_MS = 60 * 1000;
 const INGESTION_MESSAGE_PACING_MS = 400;
+// Onboarding tells free-tier users we're scanning "the last 2 months" (their
+// retention window, see user.constants.ts). Nothing previously enforced any
+// bound at all, so a manual/backfill poll would walk a label's entire history
+// via nextPageToken with no end condition. Gmail's `after:` search operator is
+// date-only (no time component), so this is a day-granular cutoff, not a
+// precise timestamp. Paid/unlimited tier still gets a generous cap rather than
+// a truly unbounded scan, since a mailbox with years of history in the label
+// would otherwise be able to repeat the same runaway cost this bounds.
+const INGESTION_BACKFILL_UNLIMITED_SAFETY_CAP_DAYS = 730;
+
+export function resolveBackfillWindowDays(planTier: string): number {
+  const retentionMonths = getRetentionMonthsForPlan(planTier);
+  return retentionMonths != null ? retentionMonths * 30 : INGESTION_BACKFILL_UNLIMITED_SAFETY_CAP_DAYS;
+}
+
+export function formatGmailAfterDate(date: Date): string {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}/${mm}/${dd}`;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -137,14 +159,22 @@ function formatAmount(amount: number, currency: string): string {
 
 export interface IIngestionService {
   pollAllConnections(): Promise<void>;
-  pollConnection(connectionId: number, source?: TriggerSource, pageToken?: string): Promise<void>;
+  pollConnection(
+    connectionId: number,
+    source?: TriggerSource,
+    pageToken?: string,
+    backfillCutoffDate?: string,
+    invokedFromQueue?: boolean,
+  ): Promise<void>;
   enqueuePoll(connectionId: number, source?: TriggerSource): Promise<void>;
+  reconcileFailedBackfill(connectionId: number): Promise<void>;
   processMessage(
     connectionId: number,
     messageId: string,
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
+    receivedAt?: Date,
   ): Promise<ProcessedTransaction | null>;
 }
 
@@ -223,22 +253,37 @@ class IngestionService implements IIngestionService {
    * Carries the Gmail pageToken forward so the next chunk actually continues
    * from where this one left off, instead of re-fetching the same first page.
    */
-  private scheduleNextPollChunk(connectionId: number, source: TriggerSource, pageToken: string): void {
+  private scheduleNextPollChunk(
+    connectionId: number,
+    source: TriggerSource,
+    pageToken: string,
+    backfillCutoffDate: string,
+  ): void {
     const queue = getIngestionQueue();
     if (queue) {
       queue
-        .add('poll', { connectionId, source, pageToken }, { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 })
+        .add(
+          'poll',
+          { connectionId, source, pageToken, backfillCutoffDate },
+          { delay: INGESTION_BACKFILL_CHUNK_DELAY_MS, priority: 1 },
+        )
         .catch((err) => logger.error(`[Ingestion] Failed to schedule next chunk for connection ${connectionId} - ${err}`));
     } else {
       setTimeout(() => {
-        this.pollConnection(connectionId, source, pageToken).catch((err) =>
+        this.pollConnection(connectionId, source, pageToken, backfillCutoffDate).catch((err) =>
           logger.error(`[Ingestion] Direct chunked poll failed for connection ${connectionId} - ${err}`),
         );
       }, INGESTION_BACKFILL_CHUNK_DELAY_MS);
     }
   }
 
-  async pollConnection(connectionId: number, source: TriggerSource = 'cron', pageToken?: string): Promise<void> {
+  async pollConnection(
+    connectionId: number,
+    source: TriggerSource = 'cron',
+    pageToken?: string,
+    backfillCutoffDate?: string,
+    invokedFromQueue: boolean = false,
+  ): Promise<void> {
     const channel = `sync:${connectionId}`;
     const emit = (event: string, data: unknown) =>
       syncEventBus.emit(channel, { event, data });
@@ -272,11 +317,39 @@ class IngestionService implements IIngestionService {
       // cron cadence and pace the remainder via a delayed follow-up instead of
       // draining everything in one dense burst. See fintrack-backend#137.
       const isManualPoll = source === 'manual';
+
+      // A pageToken is only valid for the exact query that produced it. One that
+      // arrives without a paired backfillCutoffDate was enqueued by pre-fix code
+      // (before after: filtering existed), so honoring it against a freshly
+      // computed cutoff would send Gmail a pageToken from a different query,
+      // which it rejects. Discard it and restart the chain fresh instead.
+      const hasUnpairedPageToken = !!pageToken && !backfillCutoffDate;
+      if (hasUnpairedPageToken) {
+        logger.warn(
+          `[Ingestion] Connection ${connectionId} received a pageToken with no paired cutoff (pre-fix job): restarting backfill chain from the start`,
+        );
+      }
+      const effectivePageToken = hasUnpairedPageToken ? undefined : pageToken;
+
+      // Pinned on this run's first chunk (no pageToken, or an unpaired one just
+      // discarded above) and carried forward unchanged on every follow-up: a
+      // pageToken is only valid for the exact query that produced it, so
+      // recomputing the window fresh on each chunk would silently change the
+      // query mid-pagination the moment a run crosses a day boundary. See
+      // fintrack-backend#158.
+      let resolvedCutoffDate: string | undefined = hasUnpairedPageToken ? undefined : backfillCutoffDate;
+      if (isManualPoll && !resolvedCutoffDate) {
+        const user = await this.userRepository.findById(connection.userId);
+        const windowDays = resolveBackfillWindowDays(user?.planTier ?? 'free');
+        resolvedCutoffDate = formatGmailAfterDate(new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000));
+      }
+
       const listResp = await gmail.users.messages.list({
         userId: 'me',
         labelIds: [connection.gmailLabelId],
         maxResults: isManualPoll ? INGESTION_BACKFILL_CHUNK_SIZE : 50,
-        pageToken,
+        pageToken: effectivePageToken,
+        ...(isManualPoll ? { q: `after:${resolvedCutoffDate}` } : {}),
       });
 
       const messages = listResp.data.messages || [];
@@ -332,8 +405,12 @@ class IngestionService implements IIngestionService {
           const from = fromHeader?.value || '';
           const subject = subjectHeader?.value || '';
           const body = this.extractEmailBody(msgResp.data.payload);
+          const internalDateMs = Number(msgResp.data.internalDate);
+          const receivedAt = Number.isFinite(internalDateMs) && internalDateMs > 0
+            ? new Date(internalDateMs)
+            : new Date();
 
-          const processed = await this.processMessage(connectionId, msg.id, body, subject, from);
+          const processed = await this.processMessage(connectionId, msg.id, body, subject, from, receivedAt);
           if (processed) {
             processedCount++;
             processedTransactions.push(processed);
@@ -358,7 +435,9 @@ class IngestionService implements IIngestionService {
 
       if (hasMoreBacklog && nextPageToken) {
         logger.info(`[Ingestion] Chunk complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages — scheduling next chunk in ${INGESTION_BACKFILL_CHUNK_DELAY_MS / 1000}s`);
-        this.scheduleNextPollChunk(connectionId, source, nextPageToken);
+        // hasMoreBacklog implies isManualPoll, which is exactly the branch above
+        // that guarantees resolvedCutoffDate is set.
+        this.scheduleNextPollChunk(connectionId, source, nextPageToken, resolvedCutoffDate!);
       } else {
         logger.info(`[Ingestion] Poll complete for connection ${connectionId}: ${processedCount} new transactions from ${total} messages`);
       }
@@ -390,6 +469,14 @@ class IngestionService implements IIngestionService {
       if (error instanceof GmailAuthRevokedError) {
         logger.warn(`[Ingestion] Connection ${connectionId} requires re-auth (invalid_grant)`);
         emit('error', { message: 'Gmail access was revoked — please reconnect your account' });
+        // Terminal: retrying won't fix an invalid_grant, and this never reaches
+        // the queue's own retry/failure bookkeeping since it returns instead of
+        // throwing. Clear backfillPending directly here (for a manual chunk) so
+        // it doesn't stay stuck true forever waiting for a chunk that will never
+        // resume, blocking Iris insight generation. See fintrack-backend#158.
+        if (source === 'manual') {
+          await this.connectionRepository.updateBackfillPending(connectionId, false).catch(() => {});
+        }
         try {
           const conn = await this.connectionRepository.findByIdOnly(connectionId);
           if (conn?.userId) {
@@ -410,7 +497,13 @@ class IngestionService implements IIngestionService {
       logger.error(`[Ingestion] Error polling connection ${connectionId} - ${error}`);
       emit('error', { message: 'Sync failed unexpectedly' });
 
-      if (source === 'manual') {
+      // A queue-invoked failure may still be retried by BullMQ below, so notifying
+      // here would be premature (and, for a chunk that goes on to succeed on retry,
+      // outright wrong). Direct/SSE invocations have no retry mechanism, so their
+      // first failure is already final. The queue-invoked terminal case (retries
+      // exhausted) is notified separately, from the worker's own failed handler in
+      // ingestion.queue.ts, which is the only place that knows retries are done.
+      if (source === 'manual' && !invokedFromQueue) {
         try {
           const conn = await this.connectionRepository.findByIdOnly(connectionId);
           if (conn?.userId) {
@@ -426,6 +519,33 @@ class IngestionService implements IIngestionService {
           // ignore notification failure
         }
       }
+
+      // Previously this error was always swallowed, so a queued chunk job always
+      // resolved successfully: BullMQ's retry/backoff never fired, the rest of a
+      // manual backfill's backlog was silently dropped, and backfillPending stayed
+      // true forever. Rethrowing here lets the worker's job promise reject, so
+      // BullMQ retries with its configured backoff instead. See fintrack-backend#158.
+      if (invokedFromQueue) {
+        throw error;
+      }
+    }
+  }
+
+  async reconcileFailedBackfill(connectionId: number): Promise<void> {
+    try {
+      const conn = await this.connectionRepository.findByIdOnly(connectionId);
+      await this.connectionRepository.updateBackfillPending(connectionId, false);
+      if (conn?.userId) {
+        await this.notificationService.create({
+          userId: conn.userId,
+          type: 'sync_failed',
+          title: 'Sync failed',
+          body: 'Something went wrong while reading your Gmail. Please try again.',
+          data: { connectionId },
+        });
+      }
+    } catch (err) {
+      logger.error(`[Ingestion] Failed to reconcile backfill state for connection ${connectionId} - ${err}`);
     }
   }
 
@@ -469,6 +589,7 @@ class IngestionService implements IIngestionService {
     emailBody: string,
     emailSubject: string,
     fromAddress: string,
+    receivedAt: Date = new Date(),
   ): Promise<ProcessedTransaction | null> {
     try {
       const connection = await this.connectionRepository.findByIdOnly(connectionId);
@@ -615,6 +736,7 @@ class IngestionService implements IIngestionService {
           regexResult.date,
           emailBody,
           emailSubject,
+          receivedAt,
         );
         const rawMerchant = (regexResult.merchant as string) || undefined;
         let merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
@@ -813,6 +935,7 @@ class IngestionService implements IIngestionService {
         extractedOrFallback.date,
         emailBody,
         emailSubject,
+        receivedAt,
       );
       const learnedCategory = await this.transactionRepository.findLearnedCategoryForMerchant(
         userId,
@@ -1280,13 +1403,7 @@ class IngestionService implements IIngestionService {
     return transactionType === TransactionTypeEnum.DEBIT ? -absAmount : absAmount;
   }
 
-  private parseTransactionDate(value: string | undefined): Date {
-    if (!value) return new Date();
-    const parsed = new Date(value);
-    return isNaN(parsed.getTime()) ? new Date() : parsed;
-  }
-
-  private resolveTransactionDate(value: string | undefined, body: string, subject: string): Date {
+  private resolveTransactionDate(value: string | undefined, body: string, subject: string, receivedAt: Date): Date {
     const primary = this.parseDateCandidate(value);
     if (primary && !this.isMidnight(primary, value)) return primary;
 
@@ -1333,7 +1450,11 @@ class IngestionService implements IIngestionService {
     }
 
     if (primary) return primary;
-    return new Date();
+    // No date found anywhere in the extracted text: fall back to the email's own
+    // received timestamp (Gmail internalDate), not the moment we happen to be
+    // processing it. For a backfill, "now" would silently mislabel old transactions
+    // as happening today. See fintrack-backend#158.
+    return receivedAt;
   }
 
   private parseDateCandidate(raw: string | undefined): Date | null {

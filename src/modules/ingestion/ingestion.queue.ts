@@ -12,6 +12,12 @@ export interface ConnectionJobData {
   // fintrack-backend#137. Absent for a fresh poll (cron, or the first chunk
   // of a manual one).
   pageToken?: string;
+  // The backfill's `after:YYYY/MM/DD` cutoff, pinned on the first chunk and
+  // carried forward unchanged on every follow-up job. Gmail's pageToken is only
+  // valid for the exact query that produced it, so recomputing "N days ago"
+  // fresh on each chunk would silently change the query mid-pagination the
+  // moment a backfill run crosses a day boundary (see fintrack-backend#158).
+  backfillCutoffDate?: string;
 }
 
 let _queue: Queue<ConnectionJobData> | null = null;
@@ -44,14 +50,14 @@ export function startIngestionWorker(): Worker<ConnectionJobData> | null {
   const worker = new Worker<ConnectionJobData>(
     QUEUE_NAME,
     async (job: Job<ConnectionJobData>) => {
-      const { connectionId, source, pageToken } = job.data;
+      const { connectionId, source, pageToken, backfillCutoffDate } = job.data;
       // Lazy-resolve to avoid a circular import at module-load time.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { container } = require('tsyringe');
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const IngestionServiceClass = require('@/modules/ingestion/ingestion.service').default;
       const service = container.resolve(IngestionServiceClass);
-      await service.pollConnection(connectionId, source, pageToken);
+      await service.pollConnection(connectionId, source, pageToken, backfillCutoffDate, true);
     },
     { connection: conn, concurrency: CONCURRENCY },
   );
@@ -59,9 +65,34 @@ export function startIngestionWorker(): Worker<ConnectionJobData> | null {
   worker.on('completed', (job) =>
     logger.info(`[Queue] Job ${job.id} (conn=${job.data.connectionId}) completed`),
   );
-  worker.on('failed', (job, err) =>
-    logger.error(`[Queue] Job ${job?.id} (conn=${job?.data?.connectionId}) failed: ${err.message}`),
-  );
+  worker.on('failed', (job, err) => {
+    logger.error(`[Queue] Job ${job?.id} (conn=${job?.data?.connectionId}) failed: ${err.message}`);
+    if (!job) return;
+
+    // pollConnection now rethrows so this fires on every failed attempt, not
+    // just the last one. Only reconcile once retries are actually exhausted
+    // (this is where BullMQ's own attempt count lives, not in pollConnection),
+    // and only for a manual chunk, since that's the chain whose failure leaves
+    // backfillPending stuck true and drops the rest of the backlog with no
+    // other retry path. See fintrack-backend#158.
+    const maxAttempts = job.opts.attempts ?? 1;
+    const isFinalAttempt = job.attemptsMade >= maxAttempts;
+    if (isFinalAttempt && job.data.source === 'manual') {
+      // Lazy-resolve to avoid a circular import at module-load time.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { container } = require('tsyringe');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const IngestionServiceClass = require('@/modules/ingestion/ingestion.service').default;
+      const service = container.resolve(IngestionServiceClass);
+      service
+        .reconcileFailedBackfill(job.data.connectionId)
+        .catch((reconcileErr: unknown) =>
+          logger.error(
+            `[Queue] Failed to reconcile backfill state for connection ${job.data.connectionId} - ${reconcileErr}`,
+          ),
+        );
+    }
+  });
   worker.on('error', (err) =>
     logger.error(`[Queue] Worker error: ${err.message}`),
   );
