@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, count, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import { ProcessedEmailSchema } from './ingestion.schema';
 import { EmailConnectionSchema } from '@/modules/email-connection/email-connection.schema';
@@ -22,6 +22,15 @@ export interface IIngestionRepository {
    * later poll cycle picks the message back up naturally.
    */
   markRetryable(connectionId: number, gmailMessageId: string): Promise<void>;
+  /**
+   * Rows still eligible for retry (outcome='failed', retryCount below the cap),
+   * scoped to active connections. A rate-limited message deep in a backfill was
+   * previously only retried if a later poll happened to re-list it - cron lists
+   * just the newest 50 messages per label, so it could wait indefinitely for a
+   * manual sync. This lets a periodic sweep re-fetch it directly by id instead.
+   * See fintrack-backend#168.
+   */
+  findRetryableEmails(limit: number): Promise<{ connectionId: number; gmailMessageId: string }[]>;
   getConnectionStats(connectionId: number): Promise<IConnectionStats>;
   deleteConnectionData(connectionId: number): Promise<void>;
 }
@@ -109,6 +118,26 @@ class IngestionRepositoryImpl implements IIngestionRepository {
           processedAt: new Date(),
         },
       });
+  }
+
+  async findRetryableEmails(limit: number): Promise<{ connectionId: number; gmailMessageId: string }[]> {
+    const rows = await this.db.client
+      .select({
+        connectionId: ProcessedEmailSchema.emailConnectionId,
+        gmailMessageId: ProcessedEmailSchema.gmailMessageId,
+      })
+      .from(ProcessedEmailSchema)
+      .innerJoin(EmailConnectionSchema, eq(ProcessedEmailSchema.emailConnectionId, EmailConnectionSchema.id))
+      .where(
+        and(
+          eq(ProcessedEmailSchema.outcome, 'failed'),
+          lt(ProcessedEmailSchema.retryCount, MAX_PROCESSING_RETRIES),
+          eq(EmailConnectionSchema.status, 'active'),
+        ),
+      )
+      .orderBy(ProcessedEmailSchema.processedAt)
+      .limit(limit);
+    return rows;
   }
 
   async getConnectionStats(connectionId: number): Promise<IConnectionStats> {
