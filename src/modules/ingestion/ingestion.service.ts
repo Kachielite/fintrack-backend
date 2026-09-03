@@ -749,7 +749,7 @@ class IngestionService implements IIngestionService {
           });
         } else {
         const signedAmount = this.toSignedAmount(parsedAmount, normalizedType);
-        const transactionDate = this.resolveTransactionDate(
+        let transactionDate = this.resolveTransactionDate(
           regexResult.date,
           emailBody,
           emailSubject,
@@ -759,19 +759,34 @@ class IngestionService implements IIngestionService {
         let merchant = this.resolveMerchant(rawMerchant, emailBody, emailSubject);
         let extractedCategoryHint: string | undefined = regexResult.category as string | undefined;
         const needsMerchantRepair = this.isLowQualityMerchant(merchant);
-        if (needsMerchantRepair) {
-          const repaired = await this.repairMerchantWithAi(
+        // resolveTransactionDate's cascade already rejects implausible candidates
+        // (fintrack-backend#162) and falls back to receivedAt when nothing
+        // plausible was found - landing exactly on receivedAt is the signal the
+        // regex's date rule produced nothing usable, not that the transaction
+        // genuinely happened at the moment the email was processed.
+        const needsDateRepair = transactionDate.getTime() === receivedAt.getTime();
+        if (needsMerchantRepair || needsDateRepair) {
+          const repaired = await this.repairFieldsWithAi(
             bank.name,
             emailBody,
             emailSubject,
             dbCategories,
+            receivedAt,
           );
           if (repaired) {
-            merchant = repaired.merchant;
-            extractedCategoryHint = repaired.category || extractedCategoryHint;
-            logger.info(
-              `[Ingestion] AI merchant repair applied for messageId=${messageId}: "${merchant}"`,
-            );
+            if (needsMerchantRepair && repaired.merchant) {
+              merchant = repaired.merchant;
+              extractedCategoryHint = repaired.category || extractedCategoryHint;
+              logger.info(
+                `[Ingestion] AI merchant repair applied for messageId=${messageId}: "${merchant}"`,
+              );
+            }
+            if (needsDateRepair && repaired.date) {
+              transactionDate = repaired.date;
+              logger.info(
+                `[Ingestion] AI date repair applied for messageId=${messageId}: ${transactionDate.toISOString()}`,
+              );
+            }
           }
 
           setImmediate(() => {
@@ -1342,15 +1357,24 @@ class IngestionService implements IIngestionService {
     return false;
   }
 
-  private async repairMerchantWithAi(
+  /**
+   * Repairs whichever regex-extracted fields turned out bad on an already-
+   * successful template match, keeping the fields that were fine. One AI call
+   * covers every field a message needs repaired - the caller decides which of
+   * these to actually use, so a message needing both a merchant and a date
+   * repair doesn't pay for two separate AI calls. Generalizes what was
+   * previously merchant-only repair. See fintrack-backend#164.
+   */
+  private async repairFieldsWithAi(
     bankName: string,
     body: string,
     subject: string,
     categories: ICategory[],
-  ): Promise<{ merchant: string; category?: string } | null> {
-    // This only enhances a merchant name on an already-successful regex match —
-    // the transaction itself isn't at stake here, so a rate limit just means
-    // "skip the repair," not "retry the whole message."
+    receivedAt: Date,
+  ): Promise<{ merchant?: string; category?: string; date?: Date } | null> {
+    // The transaction itself isn't at stake here - it already exists from the
+    // regex match - so a rate limit just means "skip the repair," not "retry
+    // the whole message."
     let extracted: ParsedTransaction | null;
     try {
       extracted = await this.parserRuleService.extractTransaction(bankName, body, subject, categories);
@@ -1365,11 +1389,12 @@ class IngestionService implements IIngestionService {
       body,
       subject,
     );
-    if (this.isLowQualityMerchant(repairedMerchant)) return null;
+    const repairedDate = this.parseDateCandidate(extracted.date);
 
     return {
-      merchant: repairedMerchant,
+      merchant: this.isLowQualityMerchant(repairedMerchant) ? undefined : repairedMerchant,
       category: extracted.category as string | undefined,
+      date: repairedDate && this.isPlausibleTransactionDate(repairedDate, receivedAt) ? repairedDate : undefined,
     };
   }
 

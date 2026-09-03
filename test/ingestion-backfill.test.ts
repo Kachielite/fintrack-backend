@@ -271,3 +271,77 @@ describe('shadowVerifyTemplateMatch', () => {
     assert.deepEqual(recordFailureCalls, [42]);
   });
 });
+
+describe('repairFieldsWithAi', () => {
+  const RECEIVED_AT = new Date('2026-07-04T10:00:00Z');
+
+  function makeServiceWithFakeExtraction(extractTransactionImpl: () => Promise<ParsedTransaction | null>) {
+    const service = makeBareIngestionService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).parserRuleService = { extractTransaction: extractTransactionImpl };
+    return service;
+  }
+
+  test('repairs the merchant when AI returns a good one', async () => {
+    const service = makeServiceWithFakeExtraction(async () => ({
+      merchant: 'Jumia Nigeria',
+      category: 'retail_ecommerce',
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.equal(result.merchant, 'Jumia Nigeria');
+    assert.equal(result.category, 'retail_ecommerce');
+    assert.equal(result.date, undefined);
+  });
+
+  test('does not repair the merchant when AI also returns a low-quality one', async () => {
+    const service = makeServiceWithFakeExtraction(async () => ({ merchant: 'Unknown' }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.equal(result.merchant, undefined);
+  });
+
+  test('repairs the date when AI returns a plausible one', async () => {
+    const service = makeServiceWithFakeExtraction(async () => ({ date: '03/07/2026 09:00' })); // 1 day before RECEIVED_AT
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.ok(result.date instanceof Date);
+    assert.equal(result.date.getDate(), 3);
+    assert.equal(result.date.getMonth(), 6); // July
+  });
+
+  test('does not repair the date when AI returns an implausible one', async () => {
+    const service = makeServiceWithFakeExtraction(async () => ({ date: '01/01/2020 09:00' })); // years before RECEIVED_AT
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.equal(result.date, undefined);
+  });
+
+  test('returns null when AI extraction is rate-limited', async () => {
+    const service = makeServiceWithFakeExtraction(async () => {
+      throw new RateLimitedExtractionError('rate limited');
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.equal(result, null);
+  });
+
+  test('returns null when AI extraction finds nothing', async () => {
+    const service = makeServiceWithFakeExtraction(async () => null);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (service as any).repairFieldsWithAi('GTBank', 'body', 'subject', [], RECEIVED_AT);
+
+    assert.equal(result, null);
+  });
+});
