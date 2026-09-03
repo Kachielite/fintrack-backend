@@ -28,4 +28,17 @@ export async function registerAdminDependencies(): Promise<void> {
     }
   });
   logger.info('AdminSnapshotScheduler started (daily at 3:00 AM).');
+
+  // Per-connection AI-share alerting (fintrack-backend#169) - hourly so a spike
+  // is caught the same day it starts, not after it runs overnight like the
+  // September incident.
+  cron.schedule('0 * * * *', async () => {
+    try {
+      const service = container.resolve(AdminService);
+      await service.checkConnectionAlerts();
+    } catch (err) {
+      logger.error(`Connection alert check failed - ${err}`);
+    }
+  });
+  logger.info('ConnectionAlertScheduler started (hourly).');
 }

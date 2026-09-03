@@ -5,6 +5,7 @@ import { IAdminRepository, IAiUsageRepository } from './admin.repository';
 import { calculateCostUsd } from '@/common/utils/cost-calculator';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { UnAuthorizedException, ResourceNotFoundException } from '@/common/exception';
+import logger from '@/common/lib/logger';
 import {
   AdminOverviewResponseDTO,
   RegexHealthResponseDTO,
@@ -39,7 +40,26 @@ export interface IAdminService {
   getUserRegexStat(userId: number): Promise<UserRegexStatResponseDTO>;
   getAiUsage(range: AdminDateRangeDTO): Promise<AiUsageResponseDTO>;
   takeSnapshot(): Promise<void>;
+  /**
+   * Logs a warning for any connection whose AI share has crossed the alert
+   * threshold in the last CONNECTION_HEALTH_WINDOW_HOURS - the proactive half
+   * of fintrack-backend#169's per-connection health check; getRegexHealth's
+   * by_connection field is the pull side (dashboard view), this is the push
+   * side. No dedicated ops-alerting channel (Slack/email/PagerDuty) exists in
+   * this codebase yet, so this surfaces via the application logger, which is
+   * this codebase's one universal, already-relied-on channel; wiring it to a
+   * real paging channel is a natural follow-up once one exists.
+   */
+  checkConnectionAlerts(): Promise<void>;
 }
+
+// Per-connection AI-share alerting (fintrack-backend#169): a 24h window catches
+// a spike the same day it starts, unlike the 30-day dashboard averages used
+// elsewhere in this file. A minimum sample size avoids alerting on noise from
+// a connection with only a couple of transactions in the window.
+const CONNECTION_HEALTH_WINDOW_HOURS = 24;
+const CONNECTION_ALERT_AI_SHARE_THRESHOLD_PCT = 70;
+const CONNECTION_ALERT_MIN_SAMPLE_SIZE = 10;
 
 @injectable()
 class AdminService implements IAdminService {
@@ -159,11 +179,12 @@ class AdminService implements IAdminService {
     const now = new Date();
     const ago30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [txStats, bankStats, trend, activity] = await Promise.all([
+    const [txStats, bankStats, trend, activity, connectionStats] = await Promise.all([
       this.adminRepository.getTransactionStats(),
       this.adminRepository.getBankRegexStats(),
       this.adminRepository.getRegexTrend(ago30, now),
       this.adminRepository.getTemplateActivity(ago30, now),
+      this.adminRepository.getConnectionRegexStats(CONNECTION_HEALTH_WINDOW_HOURS),
     ]);
 
     const regexTotal = txStats.handledByRegex + txStats.handledByAi || 1;
@@ -206,6 +227,20 @@ class AdminService implements IAdminService {
       };
     });
 
+    const byConnection = connectionStats.map((c) => {
+      const aiSharePct = c.txCount > 0 ? parseFloat(((c.aiCount / c.txCount) * 100).toFixed(2)) : 0;
+      const alert = c.txCount >= CONNECTION_ALERT_MIN_SAMPLE_SIZE && aiSharePct > CONNECTION_ALERT_AI_SHARE_THRESHOLD_PCT;
+      return {
+        connection_id: c.connectionId,
+        gmail_address: c.gmailAddress,
+        tx_count: c.txCount,
+        regex_count: c.regexCount,
+        ai_count: c.aiCount,
+        ai_share_pct: aiSharePct,
+        alert,
+      };
+    });
+
     return {
       as_of: now.toISOString(),
       overall_regex_rate_pct: overallRegexRatePct,
@@ -214,7 +249,24 @@ class AdminService implements IAdminService {
       templates_added_30d: activity.added,
       templates_modified_30d: activity.modified,
       templates_deprecated_30d: activity.deprecated,
+      by_connection: byConnection,
     };
+  }
+
+  async checkConnectionAlerts(): Promise<void> {
+    const stats = await this.adminRepository.getConnectionRegexStats(CONNECTION_HEALTH_WINDOW_HOURS);
+    for (const c of stats) {
+      if (c.txCount < CONNECTION_ALERT_MIN_SAMPLE_SIZE) continue;
+      const aiSharePct = (c.aiCount / c.txCount) * 100;
+      if (aiSharePct > CONNECTION_ALERT_AI_SHARE_THRESHOLD_PCT) {
+        logger.warn(
+          `[AdminAlert] Connection ${c.connectionId} (${c.gmailAddress}) AI share is ${aiSharePct.toFixed(1)}% ` +
+            `over the last ${CONNECTION_HEALTH_WINDOW_HOURS}h (${c.aiCount}/${c.txCount} transactions), ` +
+            `above the ${CONNECTION_ALERT_AI_SHARE_THRESHOLD_PCT}% threshold. This is the signature of either a new/unhandled ` +
+            `bank email format or a runaway backfill.`,
+        );
+      }
+    }
   }
 
   async getRegexTemplates(query: RegexTemplateQueryDTO): Promise<RegexTemplateListDTO> {

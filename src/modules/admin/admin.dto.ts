@@ -108,6 +108,20 @@ export const RegexHealthResponseSchema = z.object({
   templates_added_30d: z.number(),
   templates_modified_30d: z.number(),
   templates_deprecated_30d: z.number(),
+  // Per-connection, not per-bank: a spike here is the signature of both "new
+  // bank format" and "runaway backfill" (the September incident was one
+  // connection, not a bank-wide issue, so by_bank alone wouldn't have shown
+  // it). Only includes connections with activity in the window. See
+  // fintrack-backend#169.
+  by_connection: z.array(z.object({
+    connection_id: z.number(),
+    gmail_address: z.string(),
+    tx_count: z.number(),
+    regex_count: z.number(),
+    ai_count: z.number(),
+    ai_share_pct: z.number(),
+    alert: z.boolean(),
+  })),
 });
 export type RegexHealthResponseDTO = z.infer<typeof RegexHealthResponseSchema>;
 
