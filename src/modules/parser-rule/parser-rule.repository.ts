@@ -53,10 +53,23 @@ export interface IParserRuleRepository {
    */
   findDemotedTemplates(): Promise<IParserTemplateWithRules[]>;
   updateRuleStatus(id: number, status: RuleStatusEnum, notes?: string): Promise<void>;
-  findBlueprintByBankAndType(bankId: number, transactionType: string): Promise<IBankEmailBlueprint | null>;
+  /**
+   * The blueprint "slot" for one specific email shape - scoped by formatSignature,
+   * not just (bankId, transactionType), so a bank's multiple concurrently-active
+   * formats under the same coarse type each get their own independent row
+   * instead of overwriting each other. See fintrack-backend#184.
+   */
+  findBlueprintByBankTypeAndSignature(
+    bankId: number,
+    transactionType: string,
+    formatSignature: string,
+  ): Promise<IBankEmailBlueprint | null>;
+  /** All slots for a (bankId, transactionType) bucket, regardless of formatSignature - used to enforce a cap on how many distinct formats one bucket can hold. */
+  findBlueprintsByBankAndType(bankId: number, transactionType: string): Promise<IBankEmailBlueprint[]>;
   findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]>;
   createBlueprint(data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint>;
   updateBlueprint(id: number, data: Partial<IBankEmailBlueprint>): Promise<IBankEmailBlueprint>;
+  deleteBlueprint(id: number): Promise<void>;
 }
 
 @injectable()
@@ -216,9 +229,10 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
       .where(eq(ParserRuleSchema.id, id));
   }
 
-  async findBlueprintByBankAndType(
+  async findBlueprintByBankTypeAndSignature(
     bankId: number,
     transactionType: string,
+    formatSignature: string,
   ): Promise<IBankEmailBlueprint | null> {
     const rows = await this.db.client
       .select()
@@ -227,10 +241,31 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
         and(
           eq(BankEmailBlueprintSchema.bankId, bankId),
           eq(BankEmailBlueprintSchema.transactionType, transactionType),
+          eq(BankEmailBlueprintSchema.formatSignature, formatSignature),
         ),
       )
       .limit(1);
     return (rows[0] as IBankEmailBlueprint) ?? null;
+  }
+
+  async findBlueprintsByBankAndType(
+    bankId: number,
+    transactionType: string,
+  ): Promise<IBankEmailBlueprint[]> {
+    const rows = await this.db.client
+      .select()
+      .from(BankEmailBlueprintSchema)
+      .where(
+        and(
+          eq(BankEmailBlueprintSchema.bankId, bankId),
+          eq(BankEmailBlueprintSchema.transactionType, transactionType),
+        ),
+      );
+    return rows as IBankEmailBlueprint[];
+  }
+
+  async deleteBlueprint(id: number): Promise<void> {
+    await this.db.client.delete(BankEmailBlueprintSchema).where(eq(BankEmailBlueprintSchema.id, id));
   }
 
   async findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]> {

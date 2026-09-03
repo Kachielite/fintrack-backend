@@ -155,6 +155,13 @@
       "when": 1788731100000,
       "tag": "0021_parser_template_audit_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788817500000,
+      "tag": "0022_blueprint_per_format_slots",
+      "breakpoints": true
     }
   ]
 }
