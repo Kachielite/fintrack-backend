@@ -6,6 +6,7 @@ import { InternalServerException, ResourceNotFoundException } from '@/common/exc
 import logger from '@/common/lib/logger';
 import { IParserRuleRepository } from './parser-rule.repository';
 import {
+  IParserRule,
   IParserTemplate,
   IParserTemplateWithRules,
   ParsedTransaction,
@@ -17,6 +18,7 @@ import { ParserTemplateResponseDTO } from './parser-rule.dto';
 import { RuleStatusEnum, RuleFieldEnum, RuleCreatorEnum } from './parser-rule.enum';
 import { IAiUsageRepository } from '@/modules/admin/admin.repository';
 import { BankIdentificationSource } from '@/modules/bank/bank-matching';
+import { execRuleBatchWithTimeout, RegexBatchRule } from './regex-sandbox';
 
 const DEFAULT_CATEGORIES = [
   { slug: 'peer_to_peer_transfer', name: 'Peer-to-Peer Transfer', regex: null },
@@ -167,6 +169,11 @@ const REGEX_DEMOTION_MIN_SAMPLES = 5;
 // length, and demotes as soon as the streak looks like a real format change
 // rather than noise. See fintrack-backend#165.
 const REGEX_ROLLING_DEMOTION_FAIL_STREAK = 5;
+// A legitimate rule against a bounded-length email body should complete in
+// well under 1ms - this is a wide safety margin, not a tight budget, since the
+// point is to catch genuinely pathological (catastrophic-backtracking) input,
+// not to be a performance tripwire. See fintrack-backend#167.
+const REGEX_EXECUTION_TIMEOUT_MS = 200;
 
 @injectable()
 class ParserRuleService implements IParserRuleService {
@@ -427,25 +434,43 @@ Return JSON only in this exact format:
         let matchedCount = 0;
         let requiredMatched = false;
 
+        const batch: RegexBatchRule[] = [];
+        const batchRules: IParserRule[] = [];
         for (const rule of template.rules) {
           try {
             const { pattern, flags } = this.sanitizePattern(rule.pattern, rule.flags);
-            const regex = new RegExp(pattern, flags);
-            const match = regex.exec(emailBody);
-            if (match && match[rule.extractGroup]) {
-              const value = match[rule.extractGroup].trim();
-              this.assignParsedField(
-                result,
-                rule.field as RuleFieldEnum,
-                this.parseFieldValue(rule.field as RuleFieldEnum, value),
-              );
-              matchedCount++;
-              if (rule.field === RuleFieldEnum.AMOUNT) requiredMatched = true;
-            }
+            batch.push({ pattern, flags, extractGroup: rule.extractGroup });
+            batchRules.push(rule);
           } catch (ruleErr) {
             logger.warn(`Skipping bad regex rule ${rule.id} for bank ${bankId}: ${ruleErr}`);
           }
         }
+
+        const batchResult = await execRuleBatchWithTimeout(batch, emailBody, REGEX_EXECUTION_TIMEOUT_MS);
+        if (batchResult.timedOut) {
+          logger.warn(
+            `[ParserRule] Regex batch timed out for template ${template.id} (bank ${bankId}) - skipping this template for this email`,
+          );
+          setImmediate(() => {
+            this.recordFailure(template.id).catch((err) => {
+              logger.error(`Failed to record timeout failure for template ${template.id} - ${err}`);
+            });
+          });
+          continue;
+        }
+
+        batchRules.forEach((rule, i) => {
+          const value = batchResult.results[i];
+          const trimmed = value?.trim();
+          if (!trimmed) return;
+          this.assignParsedField(
+            result,
+            rule.field as RuleFieldEnum,
+            this.parseFieldValue(rule.field as RuleFieldEnum, trimmed),
+          );
+          matchedCount++;
+          if (rule.field === RuleFieldEnum.AMOUNT) requiredMatched = true;
+        });
 
         const minMatched = template.rules.length <= 1 ? 1 : 2;
         if (!requiredMatched || matchedCount < minMatched || Object.keys(result).length === 0) {
