@@ -28,7 +28,8 @@
     "test:regex-sandbox": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/regex-sandbox.test.ts",
     "test:admin-connection-alerts": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/admin-connection-alerts.test.ts",
     "test:parser-rule-audit-amount-gate": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-audit-amount-gate.test.ts",
-    "test:parser-rule-blueprint-slots": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-blueprint-slots.test.ts"
+    "test:parser-rule-blueprint-slots": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-blueprint-slots.test.ts",
+    "test:transaction-query-filters": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/transaction-query-filters.test.ts"
   },
   "keywords": [],
   "author": "",

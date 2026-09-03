@@ -176,6 +176,7 @@ class TransactionService implements ITransactionService {
         category: query.category,
         currency: query.currency,
         bankId: query.bank_id,
+        accountId: query.account_id,
         status: query.status,
         dateFrom,
         dateTo: query.date_to ? new Date(query.date_to) : undefined,

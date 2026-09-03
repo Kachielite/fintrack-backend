@@ -64,16 +64,24 @@ class TransactionController extends BaseController {
    *         name: category
    *         schema:
    *           type: string
-   *           example: groceries
+   *         description: Comma-separated list for multi-select (e.g. "groceries,transport")
+   *         example: groceries
    *       - in: query
    *         name: currency
    *         schema:
    *           type: string
-   *           example: NGN
+   *         description: Comma-separated list for multi-select (e.g. "NGN,USD")
+   *         example: NGN
    *       - in: query
    *         name: bank_id
    *         schema:
-   *           type: integer
+   *           type: string
+   *         description: Comma-separated list of bank IDs for multi-select (e.g. "1,2")
+   *       - in: query
+   *         name: account_id
+   *         schema:
+   *           type: string
+   *         description: Comma-separated list of account IDs for multi-select (e.g. "1,2")
    *       - in: query
    *         name: status
    *         schema:
