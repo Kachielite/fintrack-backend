@@ -1,5 +1,5 @@
 import { inject, injectable } from 'tsyringe';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, gt, inArray } from 'drizzle-orm';
 import Database from '@/common/lib/database';
 import {
   BankEmailBlueprintSchema,
@@ -41,6 +41,17 @@ export interface IParserRuleRepository {
   updateTemplateStatus(id: number, status: RuleStatusEnum, notes?: string): Promise<void>;
   updateTemplateConfidence(id: number, matchCount: number, failCount: number): Promise<void>;
   updateTemplateLastFailed(id: number): Promise<void>;
+  updateRecentFailStreak(id: number, streak: number): Promise<void>;
+  /**
+   * Candidate-status templates with at least one recorded match - i.e. ones
+   * that were actually applied to live production traffic before being
+   * demoted (matchCount is only ever incremented from a production-template
+   * match in applyTemplate), as opposed to a freshly generated candidate still
+   * awaiting its first audit. Reused by bulkReauditFailed's sweep alongside
+   * failed_audit templates, since both need a fresh audit attempt.
+   * See fintrack-backend#165.
+   */
+  findDemotedTemplates(): Promise<IParserTemplateWithRules[]>;
   updateRuleStatus(id: number, status: RuleStatusEnum, notes?: string): Promise<void>;
   findBlueprintByBankAndType(bankId: number, transactionType: string): Promise<IBankEmailBlueprint | null>;
   findBlueprintsByBank(bankId: number): Promise<IBankEmailBlueprint[]>;
@@ -140,6 +151,19 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
     return this.hydrateTemplates(templates);
   }
 
+  async findDemotedTemplates(): Promise<IParserTemplateWithRules[]> {
+    const templates = (await this.db.client
+      .select()
+      .from(ParserTemplateSchema)
+      .where(
+        and(
+          eq(ParserTemplateSchema.status, RuleStatusEnum.CANDIDATE),
+          gt(ParserTemplateSchema.matchCount, 0),
+        ),
+      )) as IParserTemplate[];
+    return this.hydrateTemplates(templates);
+  }
+
   async updateTemplateStatus(
     id: number,
     status: RuleStatusEnum,
@@ -173,6 +197,13 @@ class ParserRuleRepositoryImpl implements IParserRuleRepository {
     await this.db.client
       .update(ParserTemplateSchema)
       .set({ lastFailedAt: new Date(), updatedAt: new Date() })
+      .where(eq(ParserTemplateSchema.id, id));
+  }
+
+  async updateRecentFailStreak(id: number, streak: number): Promise<void> {
+    await this.db.client
+      .update(ParserTemplateSchema)
+      .set({ recentFailStreak: streak, updatedAt: new Date() })
       .where(eq(ParserTemplateSchema.id, id));
   }
 

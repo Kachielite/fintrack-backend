@@ -46,6 +46,7 @@ export interface IParserTemplate {
   confidenceScore: number;
   matchCount: number;
   failCount: number;
+  recentFailStreak: number;
   lastFailedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

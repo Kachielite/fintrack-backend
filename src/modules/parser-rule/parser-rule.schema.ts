@@ -42,6 +42,13 @@ export const ParserTemplateSchema = pgTable('parser_templates', {
   confidenceScore: real('confidence_score').default(0).notNull(),
   matchCount: integer('match_count').default(0).notNull(),
   failCount: integer('fail_count').default(0).notNull(),
+  // Consecutive recordFailure calls since the last recordMatch (reset to 0 on
+  // any match). matchCount/failCount are lifetime cumulative, so a template
+  // with a long healthy history barely moves on a handful of new failures -
+  // this catches a bank redesigning its email format (which fails every
+  // subsequent match) promptly instead of waiting for the lifetime average to
+  // eventually drift low enough. See fintrack-backend#165.
+  recentFailStreak: integer('recent_fail_streak').default(0).notNull(),
   lastFailedAt: timestamp('last_failed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
