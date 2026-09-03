@@ -79,6 +79,9 @@ export const BankEmailBlueprintSchema = pgTable(
     sanitizedBody: text('sanitized_body').notNull(),
     formatSignature: text('format_signature').notNull(),
     sampleCount: integer('sample_count').default(1).notNull(),
+    // No longer used to decide whether to replace a row (see the unique index
+    // below) - kept only so existing rows/reads don't break. Always written
+    // as 0 going forward. See fintrack-backend#184.
     driftCount: integer('drift_count').default(0).notNull(),
     // True when this sample came from an extraction that failed (non-transaction
     // or unparseable amount) rather than a successfully-created transaction.
@@ -89,9 +92,15 @@ export const BankEmailBlueprintSchema = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
-    uniqBankType: uniqueIndex('bank_email_blueprints_bank_type_uniq').on(
+    // One row per distinct email shape, not per (bank, transactionType) - a
+    // bank sending multiple genuinely different formats under the same
+    // coarse type (e.g. plain debit vs FX/currency-conversion debit) used to
+    // share a single row and stomp on each other's evidence every time the
+    // minority format arrived. See fintrack-backend#184.
+    uniqBankTypeSignature: uniqueIndex('bank_email_blueprints_bank_type_signature_uniq').on(
       table.bankId,
       table.transactionType,
+      table.formatSignature,
     ),
   }),
 );

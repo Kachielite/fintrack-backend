@@ -155,7 +155,15 @@ export interface IParserRuleService {
 
 const BLUEPRINT_BODY_MAX_LEN = 3000;
 const BLUEPRINT_SUBJECT_MAX_LEN = 240;
-const BLUEPRINT_DRIFT_REPLACE_THRESHOLD = 2;
+// Each distinct email shape within a (bank, transactionType) bucket gets its
+// own blueprint row (see fintrack-backend#184) instead of the old single-row-
+// per-bucket model, so nothing bounds bucket growth anymore except this cap.
+// Wide enough that a bank's real concurrently-active formats (plain debit, FX
+// debit, ...) all fit comfortably; a bucket hitting this is far more likely
+// noise (misclassified sender, near-random AI output) than genuine format
+// diversity. Evicting the least-recently-updated slot when it's exceeded
+// keeps the table bounded without needing a separate cleanup job.
+const BLUEPRINT_MAX_SLOTS_PER_BUCKET = 8;
 // Don't demote a template back to candidate off early noise — one failure right
 // after one success computes to a score of 1/3, well under REGEX_REAUDIT_THRESHOLD.
 // Require a minimum number of real applications before the score is trusted enough
@@ -1128,49 +1136,44 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
       if (!sanitizedBody) return;
 
       const formatSignature = this.buildFormatSignature(sanitizedSubject, sanitizedBody);
-      const existing = await this.repository.findBlueprintByBankAndType(bankId, transactionType);
-      if (!existing) {
-        await this.repository.createBlueprint({
-          bankId,
-          transactionType,
-          sanitizedSubject,
-          sanitizedBody,
-          formatSignature,
-          sampleCount: 1,
-          driftCount: 0,
-          failed,
-        });
-        return;
-      }
-
-      if (existing.formatSignature === formatSignature) {
+      const existing = await this.repository.findBlueprintByBankTypeAndSignature(
+        bankId,
+        transactionType,
+        formatSignature,
+      );
+      if (existing) {
         await this.repository.updateBlueprint(existing.id, {
           sampleCount: existing.sampleCount + 1,
-          driftCount: 0,
           failed,
         });
         return;
       }
 
-      const nextDriftCount = existing.driftCount + 1;
-      if (nextDriftCount >= BLUEPRINT_DRIFT_REPLACE_THRESHOLD) {
-        await this.repository.updateBlueprint(existing.id, {
-          sanitizedSubject,
-          sanitizedBody,
-          formatSignature,
-          sampleCount: 1,
-          driftCount: 0,
-          failed,
-        });
+      // A genuinely new shape for this bucket - give it its own slot rather
+      // than overwriting whatever's already there, so a bank's other active
+      // formats keep accumulating evidence independently. See
+      // fintrack-backend#184.
+      const bucketSlots = await this.repository.findBlueprintsByBankAndType(bankId, transactionType);
+      if (bucketSlots.length >= BLUEPRINT_MAX_SLOTS_PER_BUCKET) {
+        // <= (not <) so that on an exact timestamp tie - plausible at
+        // millisecond resolution when several slots are created in quick
+        // succession - the earlier element in iteration order (the one
+        // actually inserted first) wins, instead of the reduce drifting
+        // forward to the last-seen element on every tied comparison.
+        const oldest = bucketSlots.reduce((a, b) => (a.updatedAt <= b.updatedAt ? a : b));
+        await this.repository.deleteBlueprint(oldest.id);
         logger.info(
-          `[ParserRule] Replaced ${transactionType} blueprint for bank ${bankId} after detecting format drift`,
+          `[ParserRule] Evicted stale ${transactionType} blueprint slot for bank ${bankId} (least-recently-updated) - bucket was at its ${BLUEPRINT_MAX_SLOTS_PER_BUCKET}-slot cap`,
         );
-        return;
       }
 
-      await this.repository.updateBlueprint(existing.id, {
-        sampleCount: existing.sampleCount + 1,
-        driftCount: nextDriftCount,
+      await this.repository.createBlueprint({
+        bankId,
+        transactionType,
+        sanitizedSubject,
+        sanitizedBody,
+        formatSignature,
+        sampleCount: 1,
         failed,
       });
     } catch (error) {
