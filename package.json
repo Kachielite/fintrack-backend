@@ -26,7 +26,8 @@
     "test:ingestion-backfill": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/ingestion-backfill.test.ts",
     "test:parser-rule-demotion": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-demotion.test.ts",
     "test:regex-sandbox": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/regex-sandbox.test.ts",
-    "test:admin-connection-alerts": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/admin-connection-alerts.test.ts"
+    "test:admin-connection-alerts": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/admin-connection-alerts.test.ts",
+    "test:parser-rule-audit-amount-gate": "ts-node --project tsconfig.test.json -r tsconfig-paths/register test/parser-rule-audit-amount-gate.test.ts"
   },
   "keywords": [],
   "author": "",
