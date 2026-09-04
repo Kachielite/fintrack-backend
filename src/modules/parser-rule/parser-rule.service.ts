@@ -1332,7 +1332,21 @@ If the text has no recognizable transactions, return { "transactions": [] }.`,
       .replace(/\b\d{10,}\b/g, '<LONG_NUMBER>')
       .replace(/\b\d{4}[*xX]+\d{2,}\b/g, '<MASKED_ACCOUNT>')
       .replace(/\b(?:acct|account)\s*(?:number|no\.?|num)?\s*[:#-]?\s*\d+[A-Z0-9*X-]*/gi, 'account <ACCOUNT>')
-      .replace(/\b(?:ref(?:erence)?|rrn|session\s*id|document\s*number)\s*[:#-]?\s*[A-Z0-9/-]{6,}\b/gi, 'reference <REFERENCE>');
+      .replace(/\b(?:ref(?:erence)?|rrn|session\s*id|document\s*number)\s*[:#-]?\s*[A-Z0-9/-]{6,}\b/gi, 'reference <REFERENCE>')
+      // Labeled counterparty name fields (e.g. "Beneficiary Name: JOHN DOE") -
+      // the label anchors the match, so it's safe to redact the following
+      // words regardless of case. See fintrack-backend#155.
+      .replace(
+        /\b(beneficiary|recipient|receiver|sender|payer|payee)(\s*name)?\s*[:#-]?\s*([A-Za-z]{2,}(?:[ '.-][A-Za-z]{2,}){0,3})/gi,
+        (_m: string, label: string, nameSuffix: string) => `${label}${nameSuffix || ''} <NAME>`,
+      )
+      // "Transfer to/from SAMUEL MUNGAI"-style narration - no label to anchor
+      // on, so only redact a strict ALL-CAPS run (how these names actually
+      // render in production narrations) to avoid swallowing ordinary text.
+      .replace(
+        /\b((?:[Tt]ransfer(?:red)?|[Ss]ent|[Rr]eceived|[Pp]aid)\s+(?:[Tt]o|[Ff]rom))\s+((?:<MASKED_ACCOUNT>\s+|[\dX*]{6,}\s+)?)([A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})\b/g,
+        (_m: string, verb: string, prefix: string) => `${verb} ${prefix}<NAME>`,
+      );
 
     return redacted.length > maxLen ? redacted.slice(0, maxLen) : redacted;
   }
