@@ -407,38 +407,78 @@ class AdminService implements IAdminService {
     const { from, to } = this.defaultRange(range);
     const { byOperation, trend, costTrend } = await this.adminRepository.getAiUsageByPeriod(from, to);
 
+    // Each row is now scoped per (bucket, model_used), so it can be priced
+    // with that row's actual model instead of one flat rate applied to the
+    // whole aggregate. See fintrack-backend#141.
+    const rowCost = (r: any) =>
+      calculateCostUsd(Number(r.prompt_tokens), Number(r.completion_tokens), r.model_used);
+
     const totalTokens = byOperation.reduce((acc: number, r: any) => acc + Number(r.total_tokens), 0);
-    const totalCost = byOperation.reduce(
-      (acc: number, r: any) => acc + calculateCostUsd(Number(r.prompt_tokens), Number(r.completion_tokens)),
-      0,
-    );
+    const totalCost = byOperation.reduce((acc: number, r: any) => acc + rowCost(r), 0);
 
-    const byOperationFormatted = byOperation.map((r: any) => {
-      const cost = calculateCostUsd(Number(r.prompt_tokens), Number(r.completion_tokens));
-      return {
-        operation: r.operation,
-        call_count: Number(r.call_count),
-        prompt_tokens: Number(r.prompt_tokens),
-        completion_tokens: Number(r.completion_tokens),
-        total_tokens: Number(r.total_tokens),
-        estimated_cost_usd: cost,
-        pct_of_total_cost: totalCost > 0 ? parseFloat(((cost / totalCost) * 100).toFixed(2)) : 0,
+    // Collapse the per-model rows back into one entry per operation - the
+    // response shape callers/UI expect - summing tokens and (per-model-
+    // priced) cost across whichever models actually served that operation.
+    const byOperationMap = new Map<
+      string,
+      { call_count: number; prompt_tokens: number; completion_tokens: number; total_tokens: number; cost: number }
+    >();
+    for (const r of byOperation as any[]) {
+      const entry = byOperationMap.get(r.operation) ?? {
+        call_count: 0,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        cost: 0,
       };
-    });
-
-    const trendFormatted = trend.map((r: any) => ({
-      date: r.date,
-      total_tokens: Number(r.total_tokens),
-      estimated_cost_usd: calculateCostUsd(Number(r.prompt_tokens), Number(r.completion_tokens)),
-      call_count: Number(r.call_count),
+      entry.call_count += Number(r.call_count);
+      entry.prompt_tokens += Number(r.prompt_tokens);
+      entry.completion_tokens += Number(r.completion_tokens);
+      entry.total_tokens += Number(r.total_tokens);
+      entry.cost += rowCost(r);
+      byOperationMap.set(r.operation, entry);
+    }
+    const byOperationFormatted = Array.from(byOperationMap.entries()).map(([operation, e]) => ({
+      operation,
+      call_count: e.call_count,
+      prompt_tokens: e.prompt_tokens,
+      completion_tokens: e.completion_tokens,
+      total_tokens: e.total_tokens,
+      estimated_cost_usd: parseFloat(e.cost.toFixed(6)),
+      pct_of_total_cost: totalCost > 0 ? parseFloat(((e.cost / totalCost) * 100).toFixed(2)) : 0,
     }));
 
-    const costPerTxTrend = costTrend.map((r: any) => {
-      const dayCost = calculateCostUsd(Number(r.prompt_tokens), Number(r.completion_tokens));
-      const txCount = Number(r.tx_count) || 1;
+    // Same collapse for the daily trend - one point per date, summed across
+    // models.
+    const trendMap = new Map<string, { total_tokens: number; call_count: number; cost: number }>();
+    for (const r of trend as any[]) {
+      const entry = trendMap.get(r.date) ?? { total_tokens: 0, call_count: 0, cost: 0 };
+      entry.total_tokens += Number(r.total_tokens);
+      entry.call_count += Number(r.call_count);
+      entry.cost += rowCost(r);
+      trendMap.set(r.date, entry);
+    }
+    const trendFormatted = Array.from(trendMap.entries()).map(([date, e]) => ({
+      date,
+      total_tokens: e.total_tokens,
+      estimated_cost_usd: parseFloat(e.cost.toFixed(6)),
+      call_count: e.call_count,
+    }));
+
+    // costTrend's tx_count comes from a join keyed only on date, not model -
+    // every model-row for a given date carries the same tx_count, so it's
+    // taken once per date rather than summed across models.
+    const costTrendMap = new Map<string, { cost: number; tx_count: number }>();
+    for (const r of costTrend as any[]) {
+      const entry = costTrendMap.get(r.date) ?? { cost: 0, tx_count: Number(r.tx_count) || 0 };
+      entry.cost += rowCost(r);
+      costTrendMap.set(r.date, entry);
+    }
+    const costPerTxTrend = Array.from(costTrendMap.entries()).map(([date, e]) => {
+      const txCount = e.tx_count || 1;
       return {
-        date: r.date,
-        cost_per_tx: parseFloat((dayCost / txCount).toFixed(6)),
+        date,
+        cost_per_tx: parseFloat((e.cost / txCount).toFixed(6)),
       };
     });
 

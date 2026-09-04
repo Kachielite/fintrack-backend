@@ -151,7 +151,6 @@ export class AdminRepositoryImpl implements IAdminRepository {
   }
 
   async getTransactionStats() {
-    const now = new Date();
     const ago30 = this.thirtyDaysAgo();
 
     const row = await this.exec1(sql`
@@ -743,43 +742,51 @@ export class AdminRepositoryImpl implements IAdminRepository {
   }
 
   async getAiUsageByPeriod(from: Date, to: Date) {
+    // Grouped by model_used in addition to the usual bucket (operation/date)
+    // so the service layer can price each row with its own model's actual
+    // rate instead of one flat rate applied to the whole aggregate - see
+    // fintrack-backend#141. The service layer collapses these back into one
+    // entry per bucket for the response shape callers expect.
     const byOperation = await this.execMany(sql`
       SELECT
         operation,
+        model_used,
         COUNT(*)::int                      AS call_count,
         SUM(prompt_tokens)::int            AS prompt_tokens,
         SUM(completion_tokens)::int        AS completion_tokens,
         SUM(total_tokens)::int             AS total_tokens
       FROM ai_usage_logs
       WHERE created_at >= ${from} AND created_at <= ${to}
-      GROUP BY operation
+      GROUP BY operation, model_used
     `);
 
     const trend = await this.execMany(sql`
       SELECT
         DATE(created_at)::text             AS date,
+        model_used,
         SUM(total_tokens)::int             AS total_tokens,
         COUNT(*)::int                      AS call_count,
         SUM(prompt_tokens)::int            AS prompt_tokens,
         SUM(completion_tokens)::int        AS completion_tokens
       FROM ai_usage_logs
       WHERE created_at >= ${from} AND created_at <= ${to}
-      GROUP BY DATE(created_at)
-      ORDER BY DATE(created_at)
+      GROUP BY DATE(created_at), model_used
+      ORDER BY DATE(created_at), model_used
     `);
 
     const ago30 = this.thirtyDaysAgo();
     const costTrend = await this.execMany(sql`
       SELECT
         DATE(al.created_at)::text AS date,
+        al.model_used,
         SUM(al.prompt_tokens)::int AS prompt_tokens,
         SUM(al.completion_tokens)::int AS completion_tokens,
         COUNT(DISTINCT t.id)::int AS tx_count
       FROM ai_usage_logs al
       LEFT JOIN transactions t ON DATE(t.transaction_date) = DATE(al.created_at)
       WHERE al.created_at >= ${ago30}
-      GROUP BY DATE(al.created_at)
-      ORDER BY DATE(al.created_at)
+      GROUP BY DATE(al.created_at), al.model_used
+      ORDER BY DATE(al.created_at), al.model_used
     `);
 
     return { byOperation, trend, costTrend };
