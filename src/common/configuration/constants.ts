@@ -106,8 +106,19 @@ export const CONSTANTS = {
   ONESIGNAL_APP_ID: process.env.ONESIGNAL_APP_ID || '',
   ONESIGNAL_REST_API_KEY: process.env.ONESIGNAL_REST_API_KEY || '',
 
+  // gpt-4o pricing - the flat rate every AI Usage cost figure used to be
+  // computed with regardless of which model actually served the call. Still
+  // the fallback rate for an unrecognized model name and the rate used by
+  // callers with no per-model breakdown (e.g. getOverview's blended
+  // today/month cost). See fintrack-backend#141.
   OPENAI_COST_PER_1K_INPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_INPUT_TOKENS || '0.0025'),
   OPENAI_COST_PER_1K_OUTPUT_TOKENS: parseFloat(process.env.OPENAI_COST_PER_1K_OUTPUT_TOKENS || '0.010'),
+  // gpt-4o-mini pricing - roughly 1/17th of gpt-4o's. This is the model most
+  // extraction/classification/budget calls actually run on under the default
+  // 'balanced' OPENAI_MODE (and everything runs on it under 'cost' mode), so
+  // applying the gpt-4o rate to those calls overstated their cost by ~17x.
+  OPENAI_MINI_COST_PER_1K_INPUT_TOKENS: parseFloat(process.env.OPENAI_MINI_COST_PER_1K_INPUT_TOKENS || '0.00015'),
+  OPENAI_MINI_COST_PER_1K_OUTPUT_TOKENS: parseFloat(process.env.OPENAI_MINI_COST_PER_1K_OUTPUT_TOKENS || '0.0006'),
 
   OPENAI_EMBEDDINGS_MODEL: process.env.OPENAI_EMBEDDINGS_MODEL || 'text-embedding-3-small',
   IRIS_MAX_CONTEXT_MESSAGES: parseInt(process.env.IRIS_MAX_CONTEXT_MESSAGES || '10', 10),
