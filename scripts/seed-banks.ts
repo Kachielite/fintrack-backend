@@ -179,6 +179,24 @@ const BANKS = [
     ],
     knownSenderDomains: ['monzo.com'],
   },
+  {
+    name: 'M-Pesa',
+    shortCode: 'mpesa',
+    country: 'KE',
+    knownSenderEmails: [
+      'no-reply@safaricom.co.ke',
+      'noreply@safaricom.co.ke',
+      'mpesa@safaricom.co.ke',
+    ],
+    knownSenderDomains: ['safaricom.co.ke'],
+  },
+  {
+    name: 'Airtel Money',
+    shortCode: 'airtel-money',
+    country: 'KE',
+    knownSenderEmails: ['noreply@airtel.africa', 'no-reply@airtel.africa'],
+    knownSenderDomains: ['airtel.africa'],
+  },
 ];
 
 async function seed() {
