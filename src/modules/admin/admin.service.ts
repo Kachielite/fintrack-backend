@@ -6,6 +6,9 @@ import { calculateCostUsd } from '@/common/utils/cost-calculator';
 import { CONSTANTS } from '@/common/configuration/constants';
 import { UnAuthorizedException, ResourceNotFoundException } from '@/common/exception';
 import logger from '@/common/lib/logger';
+import ParserRuleService, { IParserRuleService, BulkReauditResult } from '@/modules/parser-rule/parser-rule.service';
+import { AuditResult } from '@/modules/parser-rule/parser-rule.interface';
+import { ParserTemplateResponseDTO } from '@/modules/parser-rule/parser-rule.dto';
 import {
   AdminOverviewResponseDTO,
   RegexHealthResponseDTO,
@@ -51,6 +54,18 @@ export interface IAdminService {
    * real paging channel is a natural follow-up once one exists.
    */
   checkConnectionAlerts(): Promise<void>;
+  /**
+   * The admin dashboard's regex-template actions (Audit Queue's per-row
+   * "Audit", "Trigger audit", and template "Promote") previously had no
+   * admin-authenticated route to call - the real logic already existed on
+   * ParserRuleService behind regular user bearer-auth, which the admin
+   * dashboard's session token can't satisfy. These delegate straight
+   * through under the admin auth this controller already gates every other
+   * route with. See fintrack-backend#142.
+   */
+  auditTemplate(templateId: number): Promise<AuditResult>;
+  promoteTemplate(templateId: number): Promise<ParserTemplateResponseDTO>;
+  bulkReauditFailed(): Promise<BulkReauditResult>;
 }
 
 // Per-connection AI-share alerting (fintrack-backend#169): a 24h window catches
@@ -66,6 +81,7 @@ class AdminService implements IAdminService {
   constructor(
     @inject('IAdminRepository') private adminRepository: IAdminRepository,
     @inject('IAiUsageRepository') private aiUsageRepository: IAiUsageRepository,
+    @inject(ParserRuleService) private parserRuleService: IParserRuleService,
   ) {}
 
   async login(email: string, password: string): Promise<{ access_token: string; expires_in: string }> {
@@ -125,8 +141,6 @@ class AdminService implements IAdminService {
     const todayCost = calculateCostUsd(todayAi.promptTokens, todayAi.completionTokens);
     const monthCost = calculateCostUsd(monthAi.promptTokens, monthAi.completionTokens);
     const costPerTx = txStats.count30d > 0 ? monthCost / txStats.count30d : 0;
-
-    const avgParseTimeSql = await this.adminRepository.getIngestionStats();
 
     return {
       snapshot_at: now.toISOString(),
@@ -453,6 +467,18 @@ class AdminService implements IAdminService {
   async takeSnapshot(): Promise<void> {
     const overview = await this.getOverview();
     await this.adminRepository.saveSnapshot(overview);
+  }
+
+  async auditTemplate(templateId: number): Promise<AuditResult> {
+    return this.parserRuleService.auditTemplate(templateId);
+  }
+
+  async promoteTemplate(templateId: number): Promise<ParserTemplateResponseDTO> {
+    return this.parserRuleService.promoteTemplate(templateId);
+  }
+
+  async bulkReauditFailed(): Promise<BulkReauditResult> {
+    return this.parserRuleService.bulkReauditFailed();
   }
 }
 
