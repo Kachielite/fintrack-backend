@@ -300,6 +300,97 @@ class AdminController extends BaseController {
 
   /**
    * @swagger
+   * /admin/regex/templates/{id}/audit:
+   *   post:
+   *     tags: [Admin]
+   *     summary: Audit a candidate template (admin-authenticated equivalent of POST /parser-rules/templates/{id}/audit)
+   *     security:
+   *       - AdminBearer: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *           example: 1
+   *     responses:
+   *       '200':
+   *         description: Audit result
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/AuditResult'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '404':
+   *         $ref: '#/components/responses/NotFound'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/regex/templates/:id/audit')
+  async auditTemplate(req: Request) {
+    const id = parseInt(req.params.id as string, 10);
+    return { success: true, data: await this.service.auditTemplate(id) };
+  }
+
+  /**
+   * @swagger
+   * /admin/regex/templates/{id}/promote:
+   *   patch:
+   *     tags: [Admin]
+   *     summary: Promote an audited candidate template to production (admin-authenticated equivalent of PATCH /parser-rules/templates/{id}/promote)
+   *     security:
+   *       - AdminBearer: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: integer
+   *           example: 1
+   *     responses:
+   *       '200':
+   *         description: Promoted template
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ParserTemplate'
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '404':
+   *         $ref: '#/components/responses/NotFound'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Patch('/regex/templates/:id/promote')
+  async promoteTemplate(req: Request) {
+    const id = parseInt(req.params.id as string, 10);
+    return { success: true, data: await this.service.promoteTemplate(id) };
+  }
+
+  /**
+   * @swagger
+   * /admin/regex/templates/bulk-reaudit:
+   *   post:
+   *     tags: [Admin]
+   *     summary: Re-audit all failed_audit/demoted templates with the updated pipeline (admin-authenticated equivalent of POST /parser-rules/templates/bulk-reaudit)
+   *     security:
+   *       - AdminBearer: []
+   *     responses:
+   *       '200':
+   *         description: Summary of promoted vs still-failed templates
+   *       '401':
+   *         $ref: '#/components/responses/Unauthorized'
+   *       '500':
+   *         $ref: '#/components/responses/InternalServerError'
+   */
+  @Post('/regex/templates/bulk-reaudit')
+  async bulkReauditFailed(_req: Request) {
+    return { success: true, data: await this.service.bulkReauditFailed() };
+  }
+
+  /**
+   * @swagger
    * /admin/regex/gaps:
    *   get:
    *     tags: [Admin]
